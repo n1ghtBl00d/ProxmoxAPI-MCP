@@ -5,6 +5,7 @@ import os
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+import time
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP, Context
@@ -84,6 +85,170 @@ async def get_nodes(ctx: Context) -> str:
         return json.dumps(nodes, indent=2)
     except Exception as e:
         return f"Error retrieving nodes from Proxmox: {str(e)}"
+
+@mcp.tool()
+async def get_node_status(ctx: Context, node_name: str) -> str:
+    """Retrieves detailed status information for a specific node in the Proxmox cluster.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node to get status for.
+
+    Returns:
+        A JSON formatted string containing detailed status information for the specified node.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get node status (includes CPU, memory, disk info)
+        status = proxmox_client.nodes(node_name).status.get()
+        
+        # Get node network information
+        network = proxmox_client.nodes(node_name).network.get()
+        
+        # Get QEMU VMs (if available)
+        try:
+            qemu = proxmox_client.nodes(node_name).qemu.get()
+        except Exception as e:
+            qemu = f"QEMU info not available: {str(e)}"
+        
+        # Get LXC containers (if available)
+        try:
+            lxc = proxmox_client.nodes(node_name).lxc.get()
+        except Exception as e:
+            lxc = f"LXC info not available: {str(e)}"
+        
+        # Get storage information
+        try:
+            storage = proxmox_client.nodes(node_name).storage.get()
+        except Exception as e:
+            storage = f"Storage info not available: {str(e)}"
+        
+        # Combine all information
+        node_info = {
+            "node_name": node_name,
+            "status": status,
+            "network": network,
+            "qemu": qemu,
+            "lxc": lxc,
+            "storage": storage
+        }
+        
+        return json.dumps(node_info, indent=2)
+    except Exception as e:
+        return f"Error retrieving status for node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def get_lxc_containers(ctx: Context, node_name: str) -> str:
+    """Retrieves information about LXC containers on a specific node.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node to get LXC container information for.
+
+    Returns:
+        A JSON formatted string containing LXC container information for the specified node.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get LXC containers
+        lxc_containers = proxmox_client.nodes(node_name).lxc.get()
+        
+        return json.dumps(lxc_containers, indent=2)
+    except Exception as e:
+        return f"Error retrieving LXC containers for node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def get_lxc_container_info(ctx: Context, node_name: str, vmid: int) -> str:
+    """Retrieves detailed information about a specific LXC container.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the LXC container.
+        vmid: The VM ID of the LXC container.
+
+    Returns:
+        A JSON formatted string containing detailed information about the specified LXC container.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get LXC container configuration
+        config = proxmox_client.nodes(node_name).lxc(vmid).config.get()
+        
+        # Get LXC container status
+        status = proxmox_client.nodes(node_name).lxc(vmid).status.current.get()
+        
+        # Combine information
+        container_info = {
+            "node_name": node_name,
+            "vmid": vmid,
+            "config": config,
+            "status": status
+        }
+        
+        return json.dumps(container_info, indent=2)
+    except Exception as e:
+        return f"Error retrieving information for LXC container {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def manage_lxc_container(ctx: Context, node_name: str, vmid: int, action: str) -> str:
+    """Manages an LXC container by performing actions like start, stop, or reboot.
+
+    This tool allows you to control the lifecycle of an LXC container by performing
+    various actions such as starting, stopping, rebooting, shutting down, suspending,
+    or resuming the container.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the LXC container.
+        vmid: The VM ID of the LXC container.
+        action: The action to perform on the container. Valid values are:
+                'start' - Start the container
+                'stop' - Stop the container immediately
+                'reboot' - Reboot the container (shutdown and start)
+                'shutdown' - Gracefully shut down the container
+                'suspend' - EXPERIMENTAL: Suspend the container (use with caution). Only use if explicitly instructed to do so.
+                'resume' - EXPERIMENTAL: Resume a suspended container. Only use if explicitly instructed to do so.
+
+    Returns:
+        A string indicating the result of the action.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Validate action
+        valid_actions = ['start', 'stop', 'reboot', 'shutdown', 'suspend', 'resume']
+        if action not in valid_actions:
+            return f"Invalid action '{action}'. Valid actions are: {', '.join(valid_actions)}"
+        
+        # Perform the action
+        if action == 'start':
+            proxmox_client.nodes(node_name).lxc(vmid).status.start.post()
+        elif action == 'stop':
+            proxmox_client.nodes(node_name).lxc(vmid).status.stop.post()
+        elif action == 'reboot':
+            # Use the reboot endpoint which is the correct way to restart an LXC container
+            proxmox_client.nodes(node_name).lxc(vmid).status.reboot.post()
+        elif action == 'shutdown':
+            proxmox_client.nodes(node_name).lxc(vmid).status.shutdown.post()
+        elif action == 'suspend':
+            # Warning about experimental feature
+            print("WARNING: The 'suspend' action is experimental and may cause issues with some containers.")
+            proxmox_client.nodes(node_name).lxc(vmid).status.suspend.post()
+        elif action == 'resume':
+            # Warning about experimental feature
+            print("WARNING: The 'resume' action is experimental and may cause issues with some containers.")
+            proxmox_client.nodes(node_name).lxc(vmid).status.resume.post()
+        
+        return f"Successfully performed '{action}' action on LXC container {vmid} on node '{node_name}'."
+    except Exception as e:
+        return f"Error performing '{action}' action on LXC container {vmid} on node '{node_name}': {str(e)}"
 
 @mcp.tool()
 async def get_cluster_log(ctx: Context, limit: int = 50, since: str = None) -> str:
