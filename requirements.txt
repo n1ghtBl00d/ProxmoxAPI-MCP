@@ -1,0 +1,4 @@
+# requirements.txt
+fastmcp
+proxmoxer
+python-dotenv
