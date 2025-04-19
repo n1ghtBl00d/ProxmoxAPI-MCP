@@ -25,55 +25,55 @@ The following features are proposed additions, categorized for clarity. API endp
 These functions allow for direct control over the state of VMs and LXC containers.
 
 * `start_vm(node, vmid)` / `start_lxc(node, vmid)`: Start a specific VM or container.
-(API: `POST /nodes/{node}/qemu/{vmid}/status/start`, `POST /nodes/{node}/lxc/{vmid}/status/start`)
+    * (API: `POST /nodes/{node}/qemu/{vmid}/status/start`, `POST /nodes/{node}/lxc/{vmid}/status/start`)
 * `stop_vm(node, vmid)` / `stop_lxc(node, vmid)`: Initiate a clean stop of a specific VM or container (may require guest agent).
-(API: `POST /nodes/{node}/qemu/{vmid}/status/stop`, `POST /nodes/{node}/lxc/{vmid}/status/stop`)
+    * (API: `POST /nodes/{node}/qemu/{vmid}/status/stop`, `POST /nodes/{node}/lxc/{vmid}/status/stop`)
 * `shutdown_vm(node, vmid)` / `shutdown_lxc(node, vmid)`: Send ACPI shutdown signal (VMs) or container shutdown command; often preferred over stop.
-(API: `POST /nodes/{node}/qemu/{vmid}/status/shutdown`, `POST /nodes/{node}/lxc/{vmid}/status/shutdown`)
+    * (API: `POST /nodes/{node}/qemu/{vmid}/status/shutdown`, `POST /nodes/{node}/lxc/{vmid}/status/shutdown`)
 * `reboot_vm(node, vmid)` / `reboot_lxc(node, vmid)`: Initiate a reboot sequence for a VM or container.
-(API: `POST /nodes/{node}/qemu/{vmid}/status/reboot`, `POST /nodes/{node}/lxc/{vmid}/status/reboot`)
+    * (API: `POST /nodes/{node}/qemu/{vmid}/status/reboot`, `POST /nodes/{node}/lxc/{vmid}/status/reboot`)
 * `reset_vm(node, vmid)`: Perform a hard reset on a VM (equivalent to pressing the reset button). Use with caution.
-(API: `POST /nodes/{node}/qemu/{vmid}/status/reset`)
+    * (API: `POST /nodes/{node}/qemu/{vmid}/status/reset`)
 * `suspend_vm(node, vmid)`: Suspend a VM to RAM (save state).
-(API: `POST /nodes/{node}/qemu/{vmid}/status/suspend`)
+    * (API: `POST /nodes/{node}/qemu/{vmid}/status/suspend`)
 * `resume_vm(node, vmid)`: Resume a previously suspended VM.
-(API: `POST /nodes/{node}/qemu/{vmid}/status/resume`)
+    * (API: `POST /nodes/{node}/qemu/{vmid}/status/resume`)
 
 ### II. Deeper Resource Information
 
 These functions provide more detailed insights into various Proxmox resources.
 
 * `get_vm_config(node, vmid)` / `get_lxc_config(node, vmid)`: Retrieve the full configuration details (memory, CPU, disks, network, options, etc.) for a specific VM or container.
-(API: `GET /nodes/{node}/qemu/{vmid}/config`, `GET /nodes/{node}/lxc/{vmid}/config`)
+    * (API: `GET /nodes/{node}/qemu/{vmid}/config`, `GET /nodes/{node}/lxc/{vmid}/config`)
 * `get_vm_status(node, vmid)` / `get_lxc_status(node, vmid)`: Get the *current* dynamic status (running, stopped), uptime, CPU usage, memory usage, disk I/O, network I/O for a specific VM or container.
-(API: `GET /nodes/{node}/qemu/{vmid}/status/current`, `GET /nodes/{node}/lxc/{vmid}/status/current`)
+    * (API: `GET /nodes/{node}/qemu/{vmid}/status/current`, `GET /nodes/{node}/lxc/{vmid}/status/current`)
 * `get_storage_content(node, storage_id)`: List the content (ISOs, templates, backups, disk images) available on a specific storage pool, optionally filtered by node.
-(API: `GET /nodes/{node}/storage/{storage}/content`, `GET /storage/{storage}/content`)
+    * (API: `GET /nodes/{node}/storage/{storage}/content`, `GET /storage/{storage}/content`)
 * `get_storage_status(node, storage_id)`: Get detailed status (usage, free space, availability, type) for a specific storage pool, optionally filtered by node.
-(API: `GET /nodes/{node}/storage/{storage}/status`, `GET /storage/{storage}/status`)
+    * (API: `GET /nodes/{node}/storage/{storage}/status`, `GET /storage/{storage}/status`)
 * `get_node_network(node)`: List network interfaces (bridges, bonds, VLANs) and their configuration on a specific node.
-(API: `GET /nodes/{node}/network`)
+    * (API: `GET /nodes/{node}/network`)
 * `get_node_services(node)`: List the status of various Proxmox-related services running on a specific node (e.g., pveproxy, pvedaemon, corosync).
-(API: `GET /nodes/{node}/services/{service}/state`, `GET /nodes/{node}/services`)
+    * (API: `GET /nodes/{node}/services/{service}/state`, `GET /nodes/{node}/services`)
 * `get_node_time(node)`: Get the current system time on the specified node. Useful for checking time synchronization across the cluster.
-(API: `GET /nodes/{node}/time`)
+    * (API: `GET /nodes/{node}/time`)
 
 ### III. Cluster & Node Operations
 
 Functions focused on cluster-wide information and node-level tasks.
 
 * `get_cluster_log(limit, since)`: Retrieve recent cluster-wide log entries, with optional filtering.
-(API: `GET /cluster/log`)
+    * (API: `GET /cluster/log`)
 * `get_cluster_tasks()`: List recent or currently running cluster-wide tasks (e.g., backups, migrations, HA actions).
-(API: `GET /cluster/tasks`)
+    * (API: `GET /cluster/tasks`)
 * `get_task_status(node, upid)`: Get the current status and exit state of a specific task identified by its UPID (Unique Process ID).
-(API: `GET /nodes/{node}/tasks/{upid}/status`)
+    * (API: `GET /nodes/{node}/tasks/{upid}/status`)
 * `get_task_log(node, upid)`: Retrieve the full log output for a specific task.
-(API: `GET /nodes/{node}/tasks/{upid}/log`)
+    * (API: `GET /nodes/{node}/tasks/{upid}/log`)
 * `get_cluster_ha_status()`: Provide status information about High Availability groups, resources, and overall HA state, if configured.
-(API: `GET /cluster/ha/status`, `/cluster/ha/groups`, `/cluster/ha/resources`)
+    * (API: `GET /cluster/ha/status`, `/cluster/ha/groups`, `/cluster/ha/resources`)
 * `get_cluster_firewall_rules()` / `get_node_firewall_rules(node)` / `get_vm_firewall_rules(node, vmid)` / `get_lxc_firewall_rules(node, vmid)`: Retrieve firewall rules configured at the datacenter, node, VM, or container level.
-(API: `/cluster/firewall/rules`, `/nodes/{node}/firewall/rules`, `/nodes/{node}/qemu/{vmid}/firewall/rules`, `/nodes/{node}/lxc/{vmid}/firewall/rules`)
+    * (API: `/cluster/firewall/rules`, `/nodes/{node}/firewall/rules`, `/nodes/{node}/qemu/{vmid}/firewall/rules`, `/nodes/{node}/lxc/{vmid}/firewall/rules`)
 
 ### IV. Backup & Restore Related
 
