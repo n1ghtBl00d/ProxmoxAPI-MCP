@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  proxmox-mcp:
+    # Build the image using the Dockerfile in the current directory
+    build: .
+    # Optional: Specify an image name to use/create
+    # image: proxmox-mcp-server:latest
+    
+    # Load environment variables from the .env file in the same directory
+    env_file:
+      - .env
+      
+    # Map container port 8051 to host port 8051 for SSE communication
+    ports:
+      - "8051:8051"
+      
+    # Optional: Restart the container automatically unless manually stopped
+    # restart: unless-stopped
+
