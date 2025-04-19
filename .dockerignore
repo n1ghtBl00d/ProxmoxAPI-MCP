@@ -1,0 +1,22 @@
+# Git files
+.git
+.gitignore
+
+# Python cache/virtual environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.env
+env/
+venv/
+ENV/
+
+# IDE/Editor specific
+.vscode/
+.idea/
+
+# Other
+*.log
+.DS_Store
