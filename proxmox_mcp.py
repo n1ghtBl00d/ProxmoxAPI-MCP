@@ -86,6 +86,27 @@ async def get_nodes(ctx: Context) -> str:
     except Exception as e:
         return f"Error retrieving nodes from Proxmox: {str(e)}"
 
+def get_online_nodes(proxmox_client: ProxmoxAPI):
+    """Gets a list of online nodes from the Proxmox cluster.
+    
+    Args:
+        proxmox_client: The ProxmoxAPI client instance.
+        
+    Returns:
+        A list of node dictionaries that are online.
+    """
+    try:
+        # Get all nodes in one API call
+        nodes = proxmox_client.nodes.get()
+        
+        # Filter to only include online nodes
+        online_nodes = [node for node in nodes if node['status'] != 'offline']
+        
+        return online_nodes
+    except Exception as e:
+        print(f"Error retrieving online nodes: {str(e)}")
+        return []
+
 @mcp.tool()
 async def get_node_status(ctx: Context, node_name: str) -> str:
     """Retrieves detailed status information for a specific node in the Proxmox cluster.
@@ -428,6 +449,88 @@ async def get_lxc_firewall_rules(ctx: Context, node: str, vmid: int) -> str:
         return json.dumps(rules, indent=2)
     except Exception as e:
         return f"Error retrieving LXC firewall rules: {str(e)}"
+
+@mcp.tool()
+async def get_vms(ctx: Context) -> str:
+    """Lists all virtual machines across the cluster.
+
+    This tool retrieves information about all QEMU/KVM virtual machines
+    across all nodes in the Proxmox cluster.
+
+    Args:
+        ctx: The MCP server provided context.
+
+    Returns:
+        A JSON formatted string containing information about all VMs across the cluster.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get online nodes
+        online_nodes = get_online_nodes(proxmox_client)
+        
+        # Get VMs from each online node
+        all_vms = []
+        for node in online_nodes:
+            node_name = node['node']
+            try:
+                # Get QEMU VMs from this node
+                vms = proxmox_client.nodes(node_name).qemu.get()
+                
+                # Add node information to each VM
+                for vm in vms:
+                    vm['node'] = node_name
+                
+                all_vms.extend(vms)
+            except Exception as e:
+                # If we can't get VMs from a node, log it but continue with other nodes
+                print(f"Error getting VMs from node {node_name}: {str(e)}")
+        
+        return json.dumps(all_vms, indent=2)
+    except Exception as e:
+        return f"Error retrieving VMs from cluster: {str(e)}"
+
+@mcp.tool()
+async def get_storage(ctx: Context) -> str:
+    """Lists available storage pools across the cluster.
+
+    This tool retrieves information about all storage pools
+    across all nodes in the Proxmox cluster.
+
+    Args:
+        ctx: The MCP server provided context.
+
+    Returns:
+        A JSON formatted string containing information about all storage pools across the cluster.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get online nodes
+        online_nodes = get_online_nodes(proxmox_client)
+        
+        # Get storage from each online node
+        all_storage = []
+        for node in online_nodes:
+            node_name = node['node']
+            try:
+                # Get storage from this node
+                storage = proxmox_client.nodes(node_name).storage.get()
+                
+                # Add node information to each storage entry
+                for store in storage:
+                    store['node'] = node_name
+                
+                all_storage.extend(storage)
+            except Exception as e:
+                # If we can't get storage from a node, log it but continue with other nodes
+                print(f"Error getting storage from node {node_name}: {str(e)}")
+        
+        return json.dumps(all_storage, indent=2)
+    except Exception as e:
+        return f"Error retrieving storage from cluster: {str(e)}"
 
 # --- Main Execution ---
 async def main():
