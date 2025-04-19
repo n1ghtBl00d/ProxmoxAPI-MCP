@@ -35,6 +35,7 @@ class ProxmoxContext:
 async def proxmox_lifespan(server: FastMCP) -> AsyncIterator[ProxmoxContext]:
     """Manages the ProxmoxAPI client lifecycle."""
     print(f"Connecting to Proxmox at {PROXMOX_HOST}...")
+    proxmox_client = None
     try:
         proxmox_client = ProxmoxAPI(
             PROXMOX_HOST,
@@ -48,8 +49,8 @@ async def proxmox_lifespan(server: FastMCP) -> AsyncIterator[ProxmoxContext]:
         yield ProxmoxContext(proxmox_client=proxmox_client)
     except Exception as e:
         print(f"Error connecting to Proxmox: {e}")
-        # Decide how to handle connection errors - here we prevent startup
-        raise RuntimeError(f"Failed to connect to Proxmox: {e}") from e
+        # Don't raise the error, just yield None to allow the server to continue
+        yield ProxmoxContext(proxmox_client=None)
     finally:
         # No explicit cleanup needed for Proxmoxer client in this simple case
         print("Proxmox client context closing.")
@@ -212,8 +213,8 @@ async def manage_lxc_container(ctx: Context, node_name: str, vmid: int, action: 
                 'stop' - Stop the container immediately
                 'reboot' - Reboot the container (shutdown and start)
                 'shutdown' - Gracefully shut down the container
-                'suspend' - EXPERIMENTAL: Suspend the container (use with caution). Only use if explicitly instructed to do so.
-                'resume' - EXPERIMENTAL: Resume a suspended container. Only use if explicitly instructed to do so.
+                'suspend' - EXPERIMENTAL: Suspend the container (use with caution)
+                'resume' - EXPERIMENTAL: Resume a suspended container
 
     Returns:
         A string indicating the result of the action.
@@ -233,16 +234,13 @@ async def manage_lxc_container(ctx: Context, node_name: str, vmid: int, action: 
         elif action == 'stop':
             proxmox_client.nodes(node_name).lxc(vmid).status.stop.post()
         elif action == 'reboot':
-            # Use the reboot endpoint which is the correct way to restart an LXC container
             proxmox_client.nodes(node_name).lxc(vmid).status.reboot.post()
         elif action == 'shutdown':
             proxmox_client.nodes(node_name).lxc(vmid).status.shutdown.post()
         elif action == 'suspend':
-            # Warning about experimental feature
             print("WARNING: The 'suspend' action is experimental and may cause issues with some containers.")
             proxmox_client.nodes(node_name).lxc(vmid).status.suspend.post()
         elif action == 'resume':
-            # Warning about experimental feature
             print("WARNING: The 'resume' action is experimental and may cause issues with some containers.")
             proxmox_client.nodes(node_name).lxc(vmid).status.resume.post()
         
@@ -404,7 +402,20 @@ async def get_vm_firewall_rules(ctx: Context, node: str, vmid: int) -> str:
     """
     try:
         proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        rules = proxmox_client.nodes(node).qemu(vmid).firewall.rules.get()
+        
+        # First determine if this is a VM or LXC
+        try:
+            # Try to get VM info first
+            vm_info = proxmox_client.nodes(node).qemu(vmid).status.current.get()
+            rules = proxmox_client.nodes(node).qemu(vmid).firewall.rules.get()
+        except Exception:
+            try:
+                # If not a VM, try to get LXC info
+                lxc_info = proxmox_client.nodes(node).lxc(vmid).status.current.get()
+                rules = proxmox_client.nodes(node).lxc(vmid).firewall.rules.get()
+            except Exception:
+                return f"Could not find VM or LXC with ID {vmid} on node {node}"
+        
         return json.dumps(rules, indent=2)
     except Exception as e:
         return f"Error retrieving VM firewall rules: {str(e)}"
@@ -428,6 +439,265 @@ async def get_lxc_firewall_rules(ctx: Context, node: str, vmid: int) -> str:
         return json.dumps(rules, indent=2)
     except Exception as e:
         return f"Error retrieving LXC firewall rules: {str(e)}"
+
+@mcp.tool()
+async def get_storage_list(ctx: Context, node: str = 'local') -> str:
+    """Get a list of all available storage locations on a node.
+
+    Args:
+        ctx: The MCP server provided context.
+        node: The node to get storage information from (default: 'local').
+
+    Returns:
+        A JSON formatted string containing storage information.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        storage_list = proxmox_client.nodes(node).storage.get()
+        return json.dumps(storage_list, indent=2)
+    except Exception as e:
+        return f"Error retrieving storage list: {str(e)}"
+
+@mcp.tool()
+async def get_storage_content(ctx: Context, node: str, storage_id: str) -> str:
+    """Get the content of a specific storage location.
+
+    Args:
+        ctx: The MCP server provided context.
+        node: The node where the storage is located.
+        storage_id: The ID of the storage to check.
+
+    Returns:
+        A JSON formatted string containing storage content.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        content = proxmox_client.nodes(node).storage(storage_id).content.get()
+        return json.dumps(content, indent=2)
+    except Exception as e:
+        return f"Error retrieving storage content: {str(e)}"
+
+@mcp.tool()
+async def get_backup_storage_locations(ctx: Context, node: str = 'local') -> str:
+    """Get a list of storage locations that can be used for backups.
+
+    Args:
+        ctx: The MCP server provided context.
+        node: The node to check for backup-capable storage (default: 'local').
+
+    Returns:
+        A JSON formatted string containing backup-capable storage locations.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        storage_list = proxmox_client.nodes(node).storage.get()
+        
+        # Filter for backup-capable storage types
+        backup_storage = [
+            storage for storage in storage_list 
+            if storage.get('type') in ['dir', 'nfs', 'cifs', 'pbs']
+        ]
+        
+        return json.dumps(backup_storage, indent=2)
+    except Exception as e:
+        return f"Error retrieving backup storage locations: {str(e)}"
+
+@mcp.tool()
+async def list_backups(ctx: Context, node: str = 'local', storage_id: str = None, vmid: int = None) -> str:
+    """List available backups, optionally filtered by storage location or VM/LXC ID.
+
+    Args:
+        ctx: The MCP server provided context.
+        node: The node to check for backups (default: 'local').
+        storage_id: Optional storage ID to filter backups by location.
+        vmid: Optional VM/LXC ID to filter backups by.
+
+    Returns:
+        A JSON formatted string containing backup information.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # First, get all backup-capable storage locations
+        backup_storage = json.loads(await get_backup_storage_locations(ctx, node))
+        if not backup_storage:
+            return "No backup-capable storage locations found."
+        
+        # Get all storage content
+        if storage_id:
+            # Validate the specified storage
+            if not any(storage['storage'] == storage_id for storage in backup_storage):
+                return f"Storage '{storage_id}' is not a valid backup storage location."
+            
+            # Get content from specific storage
+            content = json.loads(await get_storage_content(ctx, node, storage_id))
+        else:
+            # Get content from all backup-capable storages
+            content = []
+            for storage in backup_storage:
+                try:
+                    storage_content = json.loads(await get_storage_content(ctx, node, storage['storage']))
+                    content.extend(storage_content)
+                except Exception as e:
+                    print(f"Warning: Could not access storage {storage['storage']}: {str(e)}")
+        
+        # Filter for backup files
+        backups = [item for item in content if item.get('format') == 'vma' or item.get('format') == 'lxc']
+        
+        # Filter by VMID if specified
+        if vmid is not None:
+            backups = [backup for backup in backups if backup.get('vmid') == str(vmid)]
+        
+        return json.dumps(backups, indent=2)
+    except Exception as e:
+        return f"Error listing backups: {str(e)}"
+
+@mcp.tool()
+async def create_backup(ctx: Context, node: str, vmid: int, storage_id: str, mode: str = 'snapshot', 
+                       compress: str = 'lzo', remove: bool = False) -> str:
+    """Create a backup of a VM or LXC container.
+
+    Args:
+        ctx: The MCP server provided context.
+        node: The node where the VM/LXC is located.
+        vmid: The ID of the VM/LXC to backup.
+        storage_id: The storage ID where the backup should be stored.
+        mode: Backup mode ('snapshot', 'suspend', or 'stop').
+        compress: Compression type ('lzo', 'gzip', or 'zstd').
+        remove: Whether to remove old backups after successful backup.
+
+    Returns:
+        A string containing the task ID of the backup operation.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Check if we have a valid connection
+        if proxmox_client is None:
+            return "Error: Not connected to Proxmox server. Please check your connection settings."
+        
+        # Validate parameters
+        valid_modes = ['snapshot', 'suspend', 'stop']
+        if mode not in valid_modes:
+            return f"Invalid mode '{mode}'. Valid modes are: {', '.join(valid_modes)}"
+        
+        valid_compress = ['lzo', 'gzip', 'zstd']
+        if compress not in valid_compress:
+            return f"Invalid compression type '{compress}'. Valid types are: {', '.join(valid_compress)}"
+        
+        # First determine if this is a VM or LXC
+        try:
+            # Try to get VM info first
+            vm_info = proxmox_client.nodes(node).qemu(vmid).status.current.get()
+            vm_type = 'qemu'
+        except Exception:
+            try:
+                # If not a VM, try to get LXC info
+                lxc_info = proxmox_client.nodes(node).lxc(vmid).status.current.get()
+                vm_type = 'lxc'
+            except Exception:
+                return f"Could not find VM or LXC with ID {vmid} on node {node}"
+        
+        # Prepare backup parameters
+        params = {
+            'mode': mode,
+            'compress': compress,
+            'remove': 1 if remove else 0,
+            'storage': storage_id,
+            'vmid': str(vmid)  # Convert to string as required by the API
+        }
+        
+        # Start backup task using the vzdump endpoint
+        try:
+            task = proxmox_client.nodes(node).vzdump.post(**params)
+            # The task response is a string containing the UPID
+            upid = task
+            return f"Backup task started for {vm_type} {vmid}. UPID: {upid}"
+        except Exception as e:
+            return f"Error starting backup task: {str(e)}"
+            
+    except Exception as e:
+        return f"Error creating backup: {str(e)}"
+
+@mcp.tool()
+async def get_backup_status(ctx: Context, node: str, upid: str) -> str:
+    """Get the status of a backup task.
+
+    Args:
+        ctx: The MCP server provided context.
+        node: The node where the backup task is running.
+        upid: The Unique Process ID of the backup task.
+
+    Returns:
+        A JSON formatted string containing backup task status.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get task status
+        status = proxmox_client.nodes(node).tasks(upid).status.get()
+        
+        # Get task log
+        log = proxmox_client.nodes(node).tasks(upid).log.get()
+        
+        # Combine status and log
+        backup_status = {
+            "status": status,
+            "log": log
+        }
+        
+        return json.dumps(backup_status, indent=2)
+    except Exception as e:
+        return f"Error getting backup status: {str(e)}"
+
+@mcp.tool()
+async def restore_backup(ctx: Context, node: str, storage_id: str, backup_file: str, 
+                        vmid: int = None, force: bool = False) -> str:
+    """Restore a VM or LXC container from a backup.
+
+    Args:
+        ctx: The MCP server provided context.
+        node: The node where the backup should be restored.
+        storage_id: The storage ID where the backup is located.
+        backup_file: The name of the backup file to restore.
+        vmid: Optional new VMID for the restored VM/LXC.
+        force: Whether to force the restore operation.
+
+    Returns:
+        A string containing the task ID of the restore operation.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Determine if this is a VM or LXC backup based on the file extension
+        is_lxc = backup_file.endswith('.tar.gz')
+        
+        # Prepare restore parameters
+        params = {
+            'archive': backup_file,
+            'storage': storage_id,
+            'force': 1 if force else 0
+        }
+        
+        if vmid is not None:
+            params['vmid'] = vmid
+        
+        # Start restore task using the appropriate endpoint
+        if is_lxc:
+            task = proxmox_client.nodes(node).lxc.restore.post(**params)
+        else:
+            task = proxmox_client.nodes(node).qemu.restore.post(**params)
+        
+        return f"Restore task started. Task ID: {task['data']}"
+    except Exception as e:
+        return f"Error restoring backup: {str(e)}"
 
 # --- Main Execution ---
 async def main():
