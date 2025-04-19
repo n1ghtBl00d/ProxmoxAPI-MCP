@@ -44,4 +44,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## Acknowledgments
 
 - [proxmoxer](https://github.com/proxmoxer/proxmoxer) - Python wrapper for Proxmox API
+- [mcp-mem0](https://github.com/coleam00/mcp-mem0) - MCP protocol reference implementation
+- [fastmcp](https://github.com/jlowin/fastmcp) - Fast MCP server implementation
 - Proxmox team for their excellent virtualization platform
