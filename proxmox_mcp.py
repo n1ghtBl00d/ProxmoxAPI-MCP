@@ -1164,7 +1164,7 @@ async def get_cluster_status(ctx: Context) -> str:
         return f"Error retrieving cluster status: {str(e)}"
 
 @mcp.tool()
-async def execute_vm_command(ctx: Context, node_name: str, vmid: int, command: str, username: Optional[str] = None) -> str:
+async def vm_agent_exec(ctx: Context, node_name: str, vmid: int, command: str, username: Optional[str] = None) -> str:
     """Executes a command in a VM's console via QEMU Guest Agent.
 
     This tool allows execution of commands inside a virtual machine that has
@@ -1172,7 +1172,7 @@ async def execute_vm_command(ctx: Context, node_name: str, vmid: int, command: s
     configured in the VM for this to work.
 
     For long-running commands, the response will include a PID that can be used with 
-    the get_vm_command_status tool to check for completion and retrieve output.
+    the vm_agent_exec_status tool to check for completion and retrieve output.
 
     Args:
         ctx: The MCP server provided context.
@@ -1239,18 +1239,18 @@ async def execute_vm_command(ctx: Context, node_name: str, vmid: int, command: s
         return f"Error executing command in VM {vmid} on node {node_name}: {str(e)}"
 
 @mcp.tool()
-async def get_vm_command_status(ctx: Context, node_name: str, vmid: int, pid: int) -> str:
+async def vm_agent_exec_status(ctx: Context, node_name: str, vmid: int, pid: int) -> str:
     """Gets the status of a command executed in a VM via the QEMU Guest Agent.
 
     This tool retrieves the status of a process that was started by the guest agent
-    using the execute_vm_command tool. It allows checking if a long-running command
+    using the vm_agent_exec tool. It allows checking if a long-running command
     has completed and obtaining its output.
 
     Args:
         ctx: The MCP server provided context.
         node_name: The name of the node containing the VM.
         vmid: The VM ID.
-        pid: The process ID returned from execute_vm_command.
+        pid: The process ID returned from vm_agent_exec.
 
     Returns:
         A JSON formatted string containing the command execution status and results.
@@ -1265,6 +1265,221 @@ async def get_vm_command_status(ctx: Context, node_name: str, vmid: int, pid: in
         return json.dumps(result, indent=2)
     except Exception as e:
         return f"Error retrieving command status for PID {pid} in VM {vmid} on node {node_name}: {str(e)}"
+
+@mcp.tool()
+async def vm_agent_get_hostname(ctx: Context, node_name: str, vmid: int) -> str:
+    """Gets the hostname of a VM via the QEMU Guest Agent.
+
+    This tool retrieves the hostname of the virtual machine using the QEMU Guest Agent.
+    The Guest Agent must be installed and running in the VM for this to work.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+
+    Returns:
+        A JSON formatted string containing the hostname information.
+        Returns an error message string if the API call fails or Guest Agent is not available.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # First verify the VM exists and is running
+        try:
+            vm_status = proxmox_client.nodes(node_name).qemu(vmid).status.current.get()
+            
+            if vm_status.get('status') != 'running':
+                return f"Error: VM {vmid} on node {node_name} is not running. Current status: {vm_status.get('status')}"
+        except Exception as e:
+            return f"Error: Could not verify VM {vmid} status on node {node_name}: {str(e)}"
+        
+        # Check if QEMU Guest Agent is running
+        try:
+            agent_info = proxmox_client.nodes(node_name).qemu(vmid).agent.get()
+            if not agent_info:
+                return f"Error: QEMU Guest Agent is not responding in VM {vmid}. Make sure it's installed and running."
+        except Exception as e:
+            return f"Error: QEMU Guest Agent not available for VM {vmid}: {str(e)}"
+        
+        # Get hostname via Guest Agent
+        result = proxmox_client.nodes(node_name).qemu(vmid).agent("get-host-name").get()
+        
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error getting hostname for VM {vmid} on node {node_name}: {str(e)}"
+
+@mcp.tool()
+async def vm_agent_get_osinfo(ctx: Context, node_name: str, vmid: int) -> str:
+    """Gets the operating system information of a VM via the QEMU Guest Agent.
+
+    This tool retrieves detailed information about the operating system running 
+    inside the VM using the QEMU Guest Agent. The Guest Agent must be installed 
+    and running in the VM for this to work.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+
+    Returns:
+        A JSON formatted string containing the OS information.
+        Returns an error message string if the API call fails or Guest Agent is not available.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # First verify the VM exists and is running
+        try:
+            vm_status = proxmox_client.nodes(node_name).qemu(vmid).status.current.get()
+            
+            if vm_status.get('status') != 'running':
+                return f"Error: VM {vmid} on node {node_name} is not running. Current status: {vm_status.get('status')}"
+        except Exception as e:
+            return f"Error: Could not verify VM {vmid} status on node {node_name}: {str(e)}"
+        
+        # Check if QEMU Guest Agent is running
+        try:
+            agent_info = proxmox_client.nodes(node_name).qemu(vmid).agent.get()
+            if not agent_info:
+                return f"Error: QEMU Guest Agent is not responding in VM {vmid}. Make sure it's installed and running."
+        except Exception as e:
+            return f"Error: QEMU Guest Agent not available for VM {vmid}: {str(e)}"
+        
+        # Get OS information via Guest Agent
+        result = proxmox_client.nodes(node_name).qemu(vmid).agent("get-osinfo").get()
+        
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error getting OS information for VM {vmid} on node {node_name}: {str(e)}"
+
+@mcp.tool()
+async def vm_agent_get_users(ctx: Context, node_name: str, vmid: int) -> str:
+    """Gets the list of users currently logged in to a VM via the QEMU Guest Agent.
+
+    This tool retrieves information about users currently logged in to the VM
+    using the QEMU Guest Agent. The Guest Agent must be installed and running 
+    in the VM for this to work.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+
+    Returns:
+        A JSON formatted string containing the list of logged-in users.
+        Returns an error message string if the API call fails or Guest Agent is not available.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # First verify the VM exists and is running
+        try:
+            vm_status = proxmox_client.nodes(node_name).qemu(vmid).status.current.get()
+            
+            if vm_status.get('status') != 'running':
+                return f"Error: VM {vmid} on node {node_name} is not running. Current status: {vm_status.get('status')}"
+        except Exception as e:
+            return f"Error: Could not verify VM {vmid} status on node {node_name}: {str(e)}"
+        
+        # Check if QEMU Guest Agent is running
+        try:
+            agent_info = proxmox_client.nodes(node_name).qemu(vmid).agent.get()
+            if not agent_info:
+                return f"Error: QEMU Guest Agent is not responding in VM {vmid}. Make sure it's installed and running."
+        except Exception as e:
+            return f"Error: QEMU Guest Agent not available for VM {vmid}: {str(e)}"
+        
+        # Get users via Guest Agent
+        result = proxmox_client.nodes(node_name).qemu(vmid).agent("get-users").get()
+        
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error getting users for VM {vmid} on node {node_name}: {str(e)}"
+
+@mcp.tool()
+async def vm_agent_ping(ctx: Context, node_name: str, vmid: int) -> str:
+    """Pings the QEMU Guest Agent to check if it's responding.
+
+    This tool sends a ping to the QEMU Guest Agent running in the VM to check if 
+    it's responsive. This is a simple way to verify that the Guest Agent is running 
+    and able to respond to requests.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+
+    Returns:
+        A JSON formatted string containing the ping response.
+        Returns an error message string if the API call fails or Guest Agent is not available.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # First verify the VM exists and is running
+        try:
+            vm_status = proxmox_client.nodes(node_name).qemu(vmid).status.current.get()
+            
+            if vm_status.get('status') != 'running':
+                return f"Error: VM {vmid} on node {node_name} is not running. Current status: {vm_status.get('status')}"
+        except Exception as e:
+            return f"Error: Could not verify VM {vmid} status on node {node_name}: {str(e)}"
+        
+        # Ping Guest Agent
+        try:
+            # The proper proxmoxer pattern for navigating the API structure
+            result = proxmox_client.nodes(node_name).qemu(vmid).agent.ping.post()
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return f"Error: QEMU Guest Agent not responding for VM {vmid}: {str(e)}"
+    except Exception as e:
+        return f"Error pinging Guest Agent for VM {vmid} on node {node_name}: {str(e)}"
+    
+@mcp.tool()
+async def vm_agent_get_network(ctx: Context, node_name: str, vmid: int) -> str:
+    """Gets network interface information from a VM via the QEMU Guest Agent.
+
+    This tool retrieves information about all network interfaces inside the VM
+    using the QEMU Guest Agent. The Guest Agent must be installed and running
+    in the VM for this to work.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+
+    Returns:
+        A JSON formatted string containing the network interface information.
+        Returns an error message string if the API call fails or Guest Agent is not available.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # First verify the VM exists and is running
+        try:
+            vm_status = proxmox_client.nodes(node_name).qemu(vmid).status.current.get()
+            
+            if vm_status.get('status') != 'running':
+                return f"Error: VM {vmid} on node {node_name} is not running. Current status: {vm_status.get('status')}"
+        except Exception as e:
+            return f"Error: Could not verify VM {vmid} status on node {node_name}: {str(e)}"
+        
+        # Check if QEMU Guest Agent is running
+        try:
+            agent_info = proxmox_client.nodes(node_name).qemu(vmid).agent.get()
+            if not agent_info:
+                return f"Error: QEMU Guest Agent is not responding in VM {vmid}. Make sure it's installed and running."
+        except Exception as e:
+            return f"Error: QEMU Guest Agent not available for VM {vmid}: {str(e)}"
+        
+        # Get network interface information via Guest Agent
+        result = proxmox_client.nodes(node_name).qemu(vmid).agent("network-get-interfaces").get()
+        
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error getting network information for VM {vmid} on node {node_name}: {str(e)}"
+
 
 # --- Main Execution ---
 async def main():
