@@ -958,6 +958,154 @@ async def get_vm_status(ctx: Context, node_name: str, vmid: int) -> str:
     except Exception as e:
         return f"Error retrieving status for VM {vmid} on node '{node_name}': {str(e)}"
 
+@mcp.tool()
+async def get_node_services(ctx: Context, node_name: str) -> str:
+    """List the status of various Proxmox-related services running on a specific node.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node to get service status for.
+
+    Returns:
+        A JSON formatted string containing service status information.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get all services on the node
+        services = proxmox_client.nodes(node_name).services.get()
+        
+        # Get detailed status for each service
+        service_details = []
+        for service in services:
+            service_name = service.get('name')
+            try:
+                # Get detailed service state
+                state = proxmox_client.nodes(node_name).services(service_name).state.get()
+                service['state'] = state
+                service_details.append(service)
+            except Exception as e:
+                # If we can't get state for a particular service, include the error
+                service['state_error'] = str(e)
+                service_details.append(service)
+        
+        return json.dumps(service_details, indent=2)
+    except Exception as e:
+        return f"Error retrieving services for node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def get_node_time(ctx: Context, node_name: str) -> str:
+    """Get the current system time on the specified node.
+
+    This is useful for checking time synchronization across the cluster.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node to get time information for.
+
+    Returns:
+        A JSON formatted string containing time information.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get time information from the node
+        time_info = proxmox_client.nodes(node_name).time.get()
+        
+        # Add a human-readable timestamp for convenience
+        if 'localtime' in time_info:
+            timestamp = time_info['localtime']
+            time_info['human_readable'] = time.strftime(
+                '%Y-%m-%d %H:%M:%S', 
+                time.localtime(timestamp)
+            )
+            
+            # Calculate time difference with server running MCP
+            server_time = int(time.time())
+            time_diff = server_time - timestamp
+            time_info['time_diff_seconds'] = time_diff
+            time_info['server_time'] = server_time
+            time_info['server_time_human'] = time.strftime(
+                '%Y-%m-%d %H:%M:%S', 
+                time.localtime(server_time)
+            )
+        
+        return json.dumps(time_info, indent=2)
+    except Exception as e:
+        return f"Error retrieving time information for node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def get_cluster_status(ctx: Context) -> str:
+    """Provides overall Proxmox cluster status information.
+
+    This tool aggregates information about the cluster, including nodes,
+    quorum status, cluster resources, and high availability status.
+
+    Args:
+        ctx: The MCP server provided context.
+
+    Returns:
+        A JSON formatted string containing cluster status information.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Collect various aspects of cluster status
+        cluster_status = {}
+        
+        # Get basic cluster status and information
+        try:
+            cluster_status['status'] = proxmox_client.cluster.status.get()
+        except Exception as e:
+            cluster_status['status_error'] = str(e)
+        
+        # Get cluster resources (VMs, containers, storage)
+        try:
+            cluster_status['resources'] = proxmox_client.cluster.resources.get()
+        except Exception as e:
+            cluster_status['resources_error'] = str(e)
+        
+        # Get high availability status if configured
+        try:
+            cluster_status['ha_status'] = proxmox_client.cluster.ha.status.get()
+        except Exception as e:
+            cluster_status['ha_status_error'] = str(e)
+        
+        # Get replication status
+        try:
+            cluster_status['replication'] = proxmox_client.cluster.replication.get()
+        except Exception as e:
+            cluster_status['replication_error'] = str(e)
+        
+        # Get tasks
+        try:
+            cluster_status['tasks'] = proxmox_client.cluster.tasks.get()
+        except Exception as e:
+            cluster_status['tasks_error'] = str(e)
+        
+        # Get log
+        try:
+            cluster_status['log'] = proxmox_client.cluster.log.get(limit=20)  # Limit to recent entries
+        except Exception as e:
+            cluster_status['log_error'] = str(e)
+        
+        # Get backup schedule
+        try:
+            cluster_status['backup_schedule'] = proxmox_client.cluster.backup.get()
+        except Exception as e:
+            cluster_status['backup_schedule_error'] = str(e)
+        
+        # Add timestamp for when this status was generated
+        cluster_status['timestamp'] = time.time()
+        cluster_status['time_human'] = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        
+        return json.dumps(cluster_status, indent=2)
+    except Exception as e:
+        return f"Error retrieving cluster status: {str(e)}"
+
 # --- Main Execution ---
 async def main():
     transport = os.getenv("TRANSPORT", "sse") # Default to SSE
