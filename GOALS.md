@@ -11,8 +11,8 @@ This project aims to enhance the capabilities available for interacting with Pro
     * ✅ `get_node_status` – Gets detailed status of a specific node
     * ✅ `get_vms` – Lists all virtual machines across the cluster
     * ✅ `get_storage` – Lists available storage pools
-    * ❌ `get_cluster_status` – Provides overall Proxmox cluster status
-    * ❌ `execute_vm_command` – Executes a command in a VM's console via Guest Agent
+    * ✅ `get_cluster_status` – Provides overall Proxmox cluster status
+    * ✅ `execute_vm_command` – Executes a command in a VM's console via Guest Agent
 * **Initial `801labs/ProxmoxAPI-MCP` Feature:**
     * ✅ `get_lxc_containers` - Lists all LXC containers on a specific node
 
@@ -43,8 +43,8 @@ These functions provide more detailed insights into various Proxmox resources.
 * ✅ `get_storage_content(node, storage_id)` - Lists content available on a specific storage pool
 * ✅ `get_storage_list(node)` - Gets storage locations on a node (storage status included)
 * ⚠️ Network information available through `get_node_status`
-* ❌ `get_node_services(node)` - Not yet implemented
-* ❌ `get_node_time(node)` - Not yet implemented
+* ✅ `get_node_services(node)` - Lists services running on a node with their status
+* ✅ `get_node_time(node)` - Gets current system time on a specified node
 
 ### III. Cluster & Node Operations
 
@@ -70,7 +70,19 @@ Functions specifically for managing backups.
 * ✅ `get_backup_status(node, upid)` - Checks status of a backup task
 * ✅ `restore_backup(node, storage_id, backup_file, vmid, force)` - Restores a VM or LXC container from backup
 
-### V. Advanced/Potentially Risky Operations
+### V. VM Guest Agent Operations
+
+Functions that interact with the QEMU Guest Agent running inside VMs.
+
+* ✅ `vm_agent_exec(node_name, vmid, command, username)` - Executes a command in a VM via QEMU Guest Agent
+* ✅ `vm_agent_exec_status(node_name, vmid, pid)` - Gets status of a command executed via Guest Agent
+* ✅ `vm_agent_get_hostname(node_name, vmid)` - Gets the hostname of a VM via Guest Agent
+* ✅ `vm_agent_get_osinfo(node_name, vmid)` - Gets OS information from a VM via Guest Agent
+* ✅ `vm_agent_get_users(node_name, vmid)` - Gets list of logged-in users in a VM via Guest Agent
+* ✅ `vm_agent_ping(node_name, vmid)` - Pings the Guest Agent to check if it's responsive
+* ✅ `vm_agent_get_network(node_name, vmid)` - Gets network interface information from a VM via Guest Agent
+
+### VI. Advanced/Potentially Risky Operations
 
 These operations involve significant changes or resource allocation and should be implemented with extreme care and appropriate safeguards.
 
@@ -80,11 +92,21 @@ These operations involve significant changes or resource allocation and should b
 * ❌ `create_vm(...)` / `create_lxc(...)` - Not yet implemented
 * ❌ `delete_vm(node, vmid)` / `delete_lxc(node, vmid)` - Not yet implemented
 
+* ❌ **Snapshot Management**
+  * `create_vm_snapshot(node, vmid, name, description)` - Create a VM snapshot
+  * `list_vm_snapshots(node, vmid)` - List VM snapshots (already available in VM info)
+  * `rollback_vm_snapshot(node, vmid, snapshot)` - Rollback to a VM snapshot
+  * `delete_vm_snapshot(node, vmid, snapshot)` - Delete a VM snapshot
+
+* ❌ **VM Creation and Templates**
+  * `create_vm_from_template(node, template_vmid, vmid, name, storage)` - Create a VM from a template
+  * `convert_vm_to_template(node, vmid)` - Convert a VM to a template
+
 ## Implementation Considerations
 
 * **Granularity vs. Simplicity:** Decide on the level of detail for functions. Should `get_vm_status` return all metrics, or should there be separate functions like `get_vm_cpu_usage`? Start broader, refine if needed.
 * **Safety & Permissions:**
-    * Prioritize implementing read-only (`get_*`) functions first. ✅ Largely complete
+    * Prioritize implementing read-only (`get_*`) functions first. ✅ Complete
     * Action functions (`start_*`, `stop_*`, `create_*`, `update_*`, `delete_*`) carry significant risk when exposed via an LLM. Implement strong input validation, confirmation steps, and potentially limit which actions are available. ✅ Basic lifecycle management implemented with validation
     * Consider leveraging Proxmox API tokens with restricted permissions tailored to the MCP server's intended capabilities.
 * **Error Handling:** Implement robust error handling for API responses (e.g., resource not found, invalid parameters, authentication failure, permission denied) and provide informative error messages back through the MCP. ✅ Basic error handling in place
@@ -94,17 +116,11 @@ These operations involve significant changes or resource allocation and should b
 
 ## Future Priorities
 
-1. **Complete Missing Basic Features:**
-   * Implement `get_node_services` and `get_node_time`
-   * Add `get_cluster_status` for overall cluster health monitoring
-   * Implement `execute_vm_command` for guest agent interaction
-
-2. **Quality Improvements:**
+1. **Quality Improvements:**
    * Add more comprehensive input validation and error handling
    * Improve documentation and examples
-   * Add unit tests
+   * Implement snapshot management functions
 
-3. **Advanced Operations:**
+2. **Advanced Operations:**
    * Implement migration, cloning, and configuration management features
    * Add VM and LXC creation and deletion capabilities (with appropriate safeguards)
-   * Implement snapshot management functions
