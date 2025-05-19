@@ -2,10 +2,12 @@
 import asyncio
 import json
 import os
+import shlex
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import time
+from typing import Optional, Dict, List, Any, Union
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP, Context
@@ -15,15 +17,33 @@ load_dotenv()
 
 # --- Configuration ---
 PROXMOX_HOST = os.getenv("PROXMOX_HOST")
+# Simple fix for hostname format - strip protocol prefix if present
+PROXMOX_HOST = PROXMOX_HOST.replace("https://", "").replace("http://", "") if PROXMOX_HOST else ""
+
 PROXMOX_USER = os.getenv("PROXMOX_USER")
 PROXMOX_PASSWORD = os.getenv("PROXMOX_PASSWORD")
 PROXMOX_VERIFY_SSL = os.getenv("PROXMOX_VERIFY_SSL", "true").lower() not in ('false', '0', 'f')
+# SSL options
+PROXMOX_SSL_WARN_ONLY = os.getenv("PROXMOX_SSL_WARN_ONLY", "false").lower() in ('true', '1', 't')
+PROXMOX_TIMEOUT = int(os.getenv("PROXMOX_TIMEOUT", "30"))
 
 # Basic validation
 if not all([PROXMOX_HOST, PROXMOX_USER, PROXMOX_PASSWORD]):
     print("Error: Please set PROXMOX_HOST, PROXMOX_USER, and PROXMOX_PASSWORD environment variables.")
     print("You can create a .env file based on .env.example")
     exit(1)
+
+# Print SSL configuration for debugging
+print(f"SSL verification: {'Enabled' if PROXMOX_VERIFY_SSL else 'Disabled'}")
+if not PROXMOX_VERIFY_SSL:
+    if PROXMOX_SSL_WARN_ONLY:
+        print("WARNING: SSL verification is disabled. This is insecure and should only be used for testing.")
+    else:
+        print("WARNING: SSL verification is disabled. This is insecure.")
+    
+    # Suppress InsecureRequestWarning when verification is disabled
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- Proxmox Context ---
 @dataclass
@@ -37,20 +57,57 @@ async def proxmox_lifespan(server: FastMCP) -> AsyncIterator[ProxmoxContext]:
     print(f"Connecting to Proxmox at {PROXMOX_HOST}...")
     proxmox_client = None
     try:
-        proxmox_client = ProxmoxAPI(
-            PROXMOX_HOST,
-            user=PROXMOX_USER,
-            password=PROXMOX_PASSWORD,
-            verify_ssl=PROXMOX_VERIFY_SSL
-        )
-        # Test connection (optional but recommended)
-        proxmox_client.version.get()
-        print("Successfully connected to Proxmox.")
+        # Create client configuration
+        proxmox_args = {
+            'host': PROXMOX_HOST,
+            'user': PROXMOX_USER,
+            'password': PROXMOX_PASSWORD,
+            'verify_ssl': PROXMOX_VERIFY_SSL,
+            'timeout': PROXMOX_TIMEOUT
+        }
+        
+        # Try to create client and test connection
+        try:
+            proxmox_client = ProxmoxAPI(**proxmox_args)
+            # Test connection
+            proxmox_client.version.get()
+            print("Successfully connected to Proxmox.")
+        except Exception as e:
+            error_msg = str(e)
+            # Handle common TLS/connection issues
+            if 'SSL' in error_msg or 'TLS' in error_msg or 'certificate' in error_msg.lower():
+                print(f"SSL/TLS Error connecting to Proxmox: {e}")
+                print("This may be due to:")
+                print("1. Self-signed or invalid certificates on the Proxmox server")
+                print("2. TLS version mismatch")
+                print("You can try setting PROXMOX_VERIFY_SSL=false in your .env file")
+                print("Note: Disabling SSL verification reduces security!")
+            elif 'timeout' in error_msg.lower():
+                print(f"Timeout connecting to Proxmox: {e}")
+                print(f"Current timeout is {PROXMOX_TIMEOUT} seconds.")
+                print("You can increase the timeout by setting PROXMOX_TIMEOUT in your .env file.")
+            elif 'refused' in error_msg.lower() or 'connection' in error_msg.lower():
+                print(f"Connection Error: {e}")
+                print("Please verify:")
+                print(f"1. The Proxmox server at {PROXMOX_HOST} is running and accessible")
+                print("2. Firewall settings allow connections")
+                print("3. The hostname/IP and port are correct")
+            elif 'Failed to parse' in error_msg:
+                print(f"URL parsing error: {e}")
+                print(f"The URL format for PROXMOX_HOST is invalid.")
+                print("Should be either:")
+                print("  - hostname:port (e.g., 192.168.1.100:8006)")
+                print("  - https://hostname:port (e.g., https://192.168.1.100:8006)")
+            else:
+                print(f"Error connecting to Proxmox: {e}")
+            
+            # Rethrow the exception to fail initialization
+            raise
         
         # Create the context with a valid connection
         yield ProxmoxContext(proxmox_client=proxmox_client)
     except Exception as e:
-        print(f"Error connecting to Proxmox: {e}")
+        print(f"Failed to initialize Proxmox client: {e}")
         # Yield a context with None to indicate failure
         yield ProxmoxContext(proxmox_client=None)
     finally:
@@ -1105,6 +1162,109 @@ async def get_cluster_status(ctx: Context) -> str:
         return json.dumps(cluster_status, indent=2)
     except Exception as e:
         return f"Error retrieving cluster status: {str(e)}"
+
+@mcp.tool()
+async def execute_vm_command(ctx: Context, node_name: str, vmid: int, command: str, username: Optional[str] = None) -> str:
+    """Executes a command in a VM's console via QEMU Guest Agent.
+
+    This tool allows execution of commands inside a virtual machine that has
+    the QEMU Guest Agent installed and running. The Guest Agent must be properly
+    configured in the VM for this to work.
+
+    For long-running commands, the response will include a PID that can be used with 
+    the get_vm_command_status tool to check for completion and retrieve output.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+        command: The command to execute in the VM.
+        username: Optional username to execute the command as (if omitted, uses the Guest Agent's default).
+
+    Returns:
+        A JSON formatted string containing the command execution results.
+        Returns an error message string if the API call fails or Guest Agent is not available.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # First verify the VM exists and is running
+        try:
+            vm_status = proxmox_client.nodes(node_name).qemu(vmid).status.current.get()
+            
+            if vm_status.get('status') != 'running':
+                return f"Error: VM {vmid} on node {node_name} is not running. Current status: {vm_status.get('status')}"
+        except Exception as e:
+            return f"Error: Could not verify VM {vmid} status on node {node_name}: {str(e)}"
+        
+        # Check if QEMU Guest Agent is running
+        try:
+            agent_info = proxmox_client.nodes(node_name).qemu(vmid).agent.get()
+            if not agent_info:
+                return f"Error: QEMU Guest Agent is not responding in VM {vmid}. Make sure it's installed and running."
+        except Exception as e:
+            return f"Error: QEMU Guest Agent not available for VM {vmid}: {str(e)}"
+        
+        # Prepare the command execution parameters
+        # If the command contains spaces, split it into an array for the Proxmox API
+        if ' ' in command:
+            # Split the command into parts (respecting quoted strings)
+            command_parts = shlex.split(command)
+            params = {
+                'command': command_parts
+            }
+        else:
+            # For simple commands without spaces, pass as is
+            params = {
+                'command': command
+            }
+        
+        # Add username if provided
+        if username:
+            params['username'] = username
+        
+        # Execute the command via Guest Agent
+        try:
+            print(f"Executing command in VM {vmid} on node {node_name}: {command}")
+            print(f"Parameters being sent: {params}")
+            result = proxmox_client.nodes(node_name).qemu(vmid).agent.exec.post(**params)
+            print(f"Command execution response: {result}")
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            error_msg = str(e)
+            if "timeout" in error_msg.lower():
+                return f"Error: Command execution timed out. This may happen with long-running commands. Try using a shorter command or check if the guest agent is responsive."
+            return f"Error executing command in VM {vmid} on node {node_name}: {error_msg}"
+    except Exception as e:
+        return f"Error executing command in VM {vmid} on node {node_name}: {str(e)}"
+
+@mcp.tool()
+async def get_vm_command_status(ctx: Context, node_name: str, vmid: int, pid: int) -> str:
+    """Gets the status of a command executed in a VM via the QEMU Guest Agent.
+
+    This tool retrieves the status of a process that was started by the guest agent
+    using the execute_vm_command tool. It allows checking if a long-running command
+    has completed and obtaining its output.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+        pid: The process ID returned from execute_vm_command.
+
+    Returns:
+        A JSON formatted string containing the command execution status and results.
+        Returns an error message string if the API call fails or Guest Agent is not available.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get the status of the process from the guest agent
+        result = proxmox_client.nodes(node_name).qemu(vmid).agent("exec-status").get(pid=pid)
+        
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error retrieving command status for PID {pid} in VM {vmid} on node {node_name}: {str(e)}"
 
 # --- Main Execution ---
 async def main():
