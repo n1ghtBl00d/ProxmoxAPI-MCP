@@ -14,7 +14,7 @@ This project aims to enhance the capabilities available for interacting with Pro
     * ✅ `get_cluster_status` – Provides overall Proxmox cluster status
     * ✅ `execute_vm_command` – Executes a command in a VM's console via Guest Agent
 * **Initial `801labs/ProxmoxAPI-MCP` Feature:**
-    * ✅ `get_lxc_containers` - Lists all LXC containers on a specific node
+    * ✅ `get_lxcs` - Lists all LXC containers on a specific node
 
 ## Current Implementation Status
 
@@ -30,16 +30,16 @@ These functions allow for direct control over the state of VMs and LXC container
 
 * ✅ VM & LXC control actions implemented through:
   * `manage_vm(node_name, vmid, action)` - Supports: start, stop, reboot, shutdown, reset, suspend, resume
-  * `manage_lxc_container(node_name, vmid, action)` - Supports: start, stop, reboot, shutdown, suspend, resume
+  * `manage_lxc(node_name, vmid, action)` - Supports: start, stop, reboot, shutdown, suspend, resume
 
 ### II. Deeper Resource Information
 
 These functions provide more detailed insights into various Proxmox resources.
 
 * ✅ `get_vm_info(node_name, vmid)` - Retrieves configuration, status, and snapshot information for a VM
-* ✅ `get_lxc_container_info(node_name, vmid)` - Retrieves configuration and status information for an LXC container
+* ✅ `get_lxc_info(node_name, vmid)` - Retrieves configuration and status information for an LXC container
 * ✅ `get_vm_status(node_name, vmid)` - Gets current dynamic status of a VM, including runtime metrics
-* ⚠️ LXC status available through `get_lxc_container_info`
+* ⚠️ LXC status available through `get_lxc_info`
 * ✅ `get_storage_content(node, storage_id)` - Lists content available on a specific storage pool
 * ✅ `get_storage_list(node)` - Gets storage locations on a node (storage status included)
 * ⚠️ Network information available through `get_node_status`

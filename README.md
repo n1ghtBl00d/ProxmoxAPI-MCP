@@ -103,9 +103,9 @@ PORT=8051
 - `manage_vm(node_name, vmid, action)`: Control VM lifecycle
 
 ### LXC Operations
-- `get_lxc_containers()`: List all LXC containers
-- `get_lxc_container_info(node_name, vmid)`: Get container details
-- `manage_lxc_container(node_name, vmid, action)`: Control container lifecycle
+- `get_lxc()`: List all LXC containers
+- `get_lxc_info(node_name, vmid)`: Get container details
+- `manage_lxc(node_name, vmid, action)`: Control container lifecycle
 
 ### Storage Operations
 - `get_storage()`: List storage pools

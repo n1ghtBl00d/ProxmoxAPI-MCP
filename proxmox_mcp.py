@@ -233,29 +233,59 @@ async def get_node_status(ctx: Context, node_name: str) -> str:
         return f"Error retrieving status for node '{node_name}': {str(e)}"
 
 @mcp.tool()
-async def get_lxc_containers(ctx: Context, node_name: str) -> str:
-    """Retrieves information about LXC containers on a specific node.
+async def get_lxcs(ctx: Context) -> str:
+    """Lists all LXC containers across the cluster.
+
+    This tool retrieves information about all LXC containers
+    across all nodes in the Proxmox cluster.
 
     Args:
         ctx: The MCP server provided context.
-        node_name: The name of the node to get LXC container information for.
 
     Returns:
-        A JSON formatted string containing LXC container information for the specified node.
+        A JSON formatted string containing information about all LXC containers across the cluster.
         Returns an error message string if the API call fails.
     """
     try:
         proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
         
-        # Get LXC containers
-        lxc_containers = proxmox_client.nodes(node_name).lxc.get()
+        # Check if we have a valid connection
+        if proxmox_client is None:
+            return "Error: Not connected to Proxmox server. Please check your connection settings."
         
-        return json.dumps(lxc_containers, indent=2)
+        # Get online nodes
+        online_nodes = get_online_nodes(proxmox_client)
+        
+        # Check if we got any online nodes
+        if not online_nodes:
+            return "No online nodes found in the cluster."
+        
+        # Get LXC containers from each online node
+        all_lxcs = []
+        for node in online_nodes:
+            node_name = node['node']
+            try:
+                # Get LXC containers from this node
+                lxcs = proxmox_client.nodes(node_name).lxc.get()
+                
+                # Add node information to each LXC container
+                for lxc in lxcs:
+                    lxc['node'] = node_name
+                
+                all_lxcs.extend(lxcs)
+            except Exception as e:
+                # If we can't get LXCs from a node, log it but continue with other nodes
+                print(f"Error getting LXC containers from node {node_name}: {str(e)}")
+        
+        if not all_lxcs:
+            return "No LXC containers found on any online nodes."
+            
+        return json.dumps(all_lxcs, indent=2)
     except Exception as e:
-        return f"Error retrieving LXC containers for node '{node_name}': {str(e)}"
+        return f"Error retrieving LXC containers from cluster: {str(e)}"
 
 @mcp.tool()
-async def get_lxc_container_info(ctx: Context, node_name: str, vmid: int) -> str:
+async def get_lxc_info(ctx: Context, node_name: str, vmid: int) -> str:
     """Retrieves detailed information about a specific LXC container.
 
     Args:
@@ -276,12 +306,19 @@ async def get_lxc_container_info(ctx: Context, node_name: str, vmid: int) -> str
         # Get LXC container status
         status = proxmox_client.nodes(node_name).lxc(vmid).status.current.get()
         
+        # Try to get snapshot information if available
+        try:
+            snapshots = proxmox_client.nodes(node_name).lxc(vmid).snapshot.get()
+        except Exception:
+            snapshots = "Snapshot information not available"
+        
         # Combine information
         container_info = {
             "node_name": node_name,
             "vmid": vmid,
             "config": config,
-            "status": status
+            "status": status,
+            "snapshots": snapshots
         }
         
         return json.dumps(container_info, indent=2)
@@ -289,7 +326,44 @@ async def get_lxc_container_info(ctx: Context, node_name: str, vmid: int) -> str
         return f"Error retrieving information for LXC container {vmid} on node '{node_name}': {str(e)}"
 
 @mcp.tool()
-async def manage_lxc_container(ctx: Context, node_name: str, vmid: int, action: str) -> str:
+async def get_lxc_status(ctx: Context, node_name: str, vmid: int) -> str:
+    """Retrieves the current dynamic status of a specific LXC container.
+
+    Gets current status information such as running state, uptime, CPU usage,
+    memory usage, disk I/O, and network I/O for a specific LXC container.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the LXC container.
+        vmid: The VM ID of the LXC container.
+
+    Returns:
+        A JSON formatted string containing current status information for the specified LXC container.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get LXC container status
+        status = proxmox_client.nodes(node_name).lxc(vmid).status.current.get()
+        
+        # Optionally get more detailed runtime data if available
+        try:
+            # Get detailed LXC runtime info
+            rrd_data = proxmox_client.nodes(node_name).lxc(vmid).rrddata.get(
+                timeframe="hour"  # Options: hour, day, week, month, year
+            )
+            status["rrd_data"] = rrd_data
+        except Exception:
+            # RRD data might not be available for all containers
+            pass
+        
+        return json.dumps(status, indent=2)
+    except Exception as e:
+        return f"Error retrieving status for LXC container {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def manage_lxc(ctx: Context, node_name: str, vmid: int, action: str) -> str:
     """Manages an LXC container by performing actions like start, stop, or reboot.
 
     This tool allows you to control the lifecycle of an LXC container by performing
@@ -548,20 +622,16 @@ async def get_vm_firewall_rules(ctx: Context, node: str, vmid: int) -> str:
     try:
         proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
         
-        # First determine if this is a VM or LXC
+        # Verify that this is a QEMU VM
         try:
-            # Try to get VM info first
+            # Check if the VM exists
             vm_info = proxmox_client.nodes(node).qemu(vmid).status.current.get()
+            # Get VM firewall rules
             rules = proxmox_client.nodes(node).qemu(vmid).firewall.rules.get()
-        except Exception:
-            try:
-                # If not a VM, try to get LXC info
-                lxc_info = proxmox_client.nodes(node).lxc(vmid).status.current.get()
-                rules = proxmox_client.nodes(node).lxc(vmid).firewall.rules.get()
-            except Exception:
-                return f"Could not find VM or LXC with ID {vmid} on node {node}"
-        
-        return json.dumps(rules, indent=2)
+            return json.dumps(rules, indent=2)
+        except Exception as e:
+            return f"Error: Could not find VM with ID {vmid} on node {node}: {str(e)}"
+            
     except Exception as e:
         return f"Error retrieving VM firewall rules: {str(e)}"
 
