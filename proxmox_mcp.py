@@ -600,6 +600,116 @@ async def rollback_vm_snapshot(ctx: Context, node_name: str, vmid: int, snapname
     except Exception as e:
         return f"Error rolling back to snapshot '{snapname}' for VM {vmid} on node '{node_name}': {str(e)}"
 
+@mcp.tool()
+async def clone_vm(ctx: Context, node: str, source_vmid: int, new_vmid: int, new_name: str, target_storage: Optional[str] = None, full_clone: bool = True, description: Optional[str] = None, target_node: Optional[str] = None, resource_pool: Optional[str] = None, snapname: Optional[str] = None) -> str:
+    """Clones a new virtual machine from an existing VM or template.
+
+    This tool is best used for cloning from templates. 
+    The 'full_clone' argument primarily affects cloning from templates; linked clones are typically only possible from templates.
+
+    Args:
+        ctx: The MCP server provided context.
+        node: The Proxmox node where the source VM/template resides.
+        source_vmid: The ID of the source VM or template.
+        new_vmid: The ID for the new VM.
+        new_name: The name for the new VM.
+        target_storage: Optional storage ID for the new VM's disks. If not provided, the system may choose a default or linked clone behavior might be different.
+        full_clone: Optional. If `True`, forces a full copy of all disks.
+                    If `False` (default):
+                    - When cloning from a template, a linked clone is attempted.
+                    - When cloning a normal (non-template) CT, a full clone is performed.
+                    Defaults to False.
+        description: Optional description for the new VM.
+        target_node: Optional target node for the new VM (if different from source node, requires shared storage).
+        resource_pool: Optional resource pool to add the new VM to.
+        snapname: Optional snapshot name to clone from. If not provided, clones the current state.
+
+    Returns:
+        A string containing the task ID of the clone operation.
+        Returns an error message string if the API call fails.
+        
+    Note: This action requires dangerous mode to be enabled (--dangerous-mode or PROXMOX_DANGEROUS_MODE=true).
+    """
+    try:
+        if not DANGEROUS_ACTIONS_ENABLED:
+            return "Error: This action requires dangerous mode to be enabled. Use --dangerous-mode flag or set PROXMOX_DANGEROUS_MODE=true."
+        
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        params = {
+            'newid': new_vmid,
+            'name': new_name,
+            'full': 1 if full_clone else 0
+        }
+        if target_storage:
+            params['storage'] = target_storage
+        if description:
+            params['description'] = description
+        if target_node:
+            params['target'] = target_node
+        if resource_pool:
+            params['pool'] = resource_pool
+        if snapname:
+            params['snapname'] = snapname
+            
+        task = proxmox_client.nodes(node).qemu(source_vmid).clone.post(**params)
+        return f"VM clone task started from source {source_vmid} to new VM {new_vmid} ('{new_name}'). Task ID: {task}"
+    except Exception as e:
+        return f"Error cloning VM from source {source_vmid}: {str(e)}"
+
+@mcp.tool()
+async def convert_vm_to_template(ctx: Context, node_name: str, vmid: int) -> str:
+    """Converts an existing virtual machine into a template.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The ID of the VM to convert to a template.
+
+    Returns:
+        A string indicating the result of the conversion, usually a task ID.
+        Returns an error message string if the API call fails.
+
+    Note: This is a dangerous action and requires dangerous mode to be enabled (--dangerous-mode or PROXMOX_DANGEROUS_MODE=true).
+          Converting a VM to a template makes it unusable as a regular VM; it can only be cloned.
+    """
+    try:
+        if not DANGEROUS_ACTIONS_ENABLED:
+            return "Error: This action requires dangerous mode to be enabled. Use --dangerous-mode flag or set PROXMOX_DANGEROUS_MODE=true."
+
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # The API for templating a VM is a POST request to the template endpoint
+        # It doesn't typically take parameters beyond what's in the path
+        task = proxmox_client.nodes(node_name).qemu(vmid).template.post()
+        
+        return f"VM {vmid} conversion to template started. Task ID: {task}"
+    except Exception as e:
+        return f"Error converting VM {vmid} to template on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def delete_vm(ctx: Context, node_name: str, vmid: int) -> str:
+    """Deletes a virtual machine.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The ID of the VM to delete.
+
+    Returns:
+        A string containing the task ID of the VM deletion.
+        Returns an error message string if the API call fails.
+
+    Note: This is a dangerous action and requires dangerous mode to be enabled (--dangerous-mode or PROXMOX_DANGEROUS_MODE=true).
+    """
+    try:
+        if not DANGEROUS_ACTIONS_ENABLED:
+            return "Error: This is a dangerous action and requires dangerous mode to be enabled. Use --dangerous-mode flag or set PROXMOX_DANGEROUS_MODE=true."
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        task = proxmox_client.nodes(node_name).qemu(vmid).delete()
+        return f"VM deletion task started for VM {vmid} on node '{node_name}'. Task ID: {task}"
+    except Exception as e:
+        return f"Error deleting VM {vmid} on node '{node_name}': {str(e)}"
+
 # 3. LXC-related tools (parallel structure to VMs)
 @mcp.tool()
 async def get_lxcs(ctx: Context) -> str:
@@ -901,6 +1011,119 @@ async def rollback_lxc_snapshot(ctx: Context, node_name: str, vmid: int, snapnam
         return f"Rollback task started to snapshot '{snapname}' for LXC container {vmid}. Task ID: {task}"
     except Exception as e:
         return f"Error rolling back to snapshot '{snapname}' for LXC container {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def clone_lxc(ctx: Context, node: str, source_vmid: int, new_vmid: int, new_name: str, target_storage: Optional[str] = None, full_clone: bool = True, description: Optional[str] = None, target_node: Optional[str] = None, resource_pool: Optional[str] = None, snapname: Optional[str] = None) -> str:
+    """Clones a new LXC container from an existing LXC or template.
+
+    This tool can clone any LXC container.
+    - When cloning from a template, a linked clone is attempted by default unless 'full_clone' is true.
+    - Cloning a regular (non-template) CT always results in a full clone, regardless of the 'full_clone' flag.
+
+    Args:
+        ctx: The MCP server provided context.
+        node: The Proxmox node where the source LXC/template resides.
+        source_vmid: The ID of the source LXC or template.
+        new_vmid: The ID for the new LXC container.
+        new_name: The hostname for the new LXC container.
+        target_storage: Optional. Target storage for the new LXC's root disk (rootfs).
+                        For full clones, this explicitly sets the target storage.
+                        For linked clones (from templates), behavior might depend on the source template's storage if not set.
+        full_clone: Optional. If `True`, forces a full copy of all disks.
+                    If `False` (default):
+                    - When cloning from a template, a linked clone is attempted.
+                    - When cloning a normal (non-template) CT, a full clone is performed.
+                    Defaults to False.
+        description: Optional description for the new LXC.
+        target_node: Optional target node for the new LXC (if different from source node, requires appropriate storage setup).
+        resource_pool: Optional resource pool to add the new LXC to.
+        snapname: Optional. The name of the snapshot to clone from. If not provided, clones the current state.
+
+    Returns:
+        A string containing the task ID of the clone operation.
+        Returns an error message string if the API call fails.
+
+    Note: This action requires dangerous mode to be enabled (--dangerous-mode or PROXMOX_DANGEROUS_MODE=true).
+    """
+    try:
+        if not DANGEROUS_ACTIONS_ENABLED:
+            return "Error: This action requires dangerous mode to be enabled. Use --dangerous-mode flag or set PROXMOX_DANGEROUS_MODE=true."
+        
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        params = {
+            'newid': new_vmid,
+            'hostname': new_name, # LXC uses 'hostname' for the name
+            'full': 1 if full_clone else 0
+        }
+        if target_storage:
+            params['storage'] = target_storage
+        if description:
+            params['description'] = description
+        if target_node:
+            params['target'] = target_node
+        if resource_pool:
+            params['pool'] = resource_pool
+        if snapname:
+            params['snapname'] = snapname
+            
+        task = proxmox_client.nodes(node).lxc(source_vmid).clone.post(**params)
+        return f"LXC clone task started from source LXC {source_vmid} to new LXC {new_vmid} ('{new_name}'). Task ID: {task}"
+    except Exception as e:
+        return f"Error cloning LXC from source {source_vmid}: {str(e)}"
+
+@mcp.tool()
+async def convert_lxc_to_template(ctx: Context, node_name: str, vmid: int) -> str:
+    """Converts an existing LXC container into a template.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the LXC container.
+        vmid: The ID of the LXC container to convert to a template.
+
+    Returns:
+        A string indicating the result of the conversion (usually empty on success for LXC template creation, or a task ID).
+        Returns an error message string if the API call fails.
+
+    Note: This is a dangerous action and requires dangerous mode to be enabled (--dangerous-mode or PROXMOX_DANGEROUS_MODE=true).
+          Converting an LXC to a template makes it unusable as a regular container; it can only be cloned.
+    """
+    try:
+        if not DANGEROUS_ACTIONS_ENABLED:
+            return "Error: This action requires dangerous mode to be enabled. Use --dangerous-mode flag or set PROXMOX_DANGEROUS_MODE=true."
+
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # The API for templating an LXC is a POST request to the template endpoint.
+        # According to docs, it returns null on success (proxmoxer might return None or an empty dict/string).
+        result = proxmox_client.nodes(node_name).lxc(vmid).template.post()
+        
+        return f"LXC container {vmid} conversion to template initiated. Result: {result if result is not None else 'OK'}"
+    except Exception as e:
+        return f"Error converting LXC {vmid} to template on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def delete_lxc(ctx: Context, node_name: str, vmid: int) -> str:
+    """Deletes an LXC container.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the LXC container.
+        vmid: The ID of the LXC container to delete.
+
+    Returns:
+        A string containing the task ID of the LXC container deletion.
+        Returns an error message string if the API call fails.
+
+    Note: This is a dangerous action and requires dangerous mode to be enabled (--dangerous-mode or PROXMOX_DANGEROUS_MODE=true).
+    """
+    try:
+        if not DANGEROUS_ACTIONS_ENABLED:
+            return "Error: This is a dangerous action and requires dangerous mode to be enabled. Use --dangerous-mode flag or set PROXMOX_DANGEROUS_MODE=true."
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        task = proxmox_client.nodes(node_name).lxc(vmid).delete()
+        return f"LXC container deletion task started for LXC {vmid} on node '{node_name}'. Task ID: {task}"
+    except Exception as e:
+        return f"Error deleting LXC container {vmid} on node '{node_name}': {str(e)}"
 
 # 4. Storage and Backup-related tools
 @mcp.tool()
