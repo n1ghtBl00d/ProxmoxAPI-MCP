@@ -1010,7 +1010,7 @@ async def get_backup_storage_locations(ctx: Context, node: str = 'local') -> str
         return f"Error retrieving backup storage locations: {str(e)}"
 
 @mcp.tool()
-async def list_backups(ctx: Context, node: str = 'local', storage_id: str = None, vmid: int = None) -> str:
+async def list_backups(ctx: Context, node: str = 'local', storage_id: Optional[str] = None, vmid: Optional[int] = None) -> str:
     """List available backups, optionally filtered by storage location or VM/LXC ID.
 
     Args:
@@ -1049,8 +1049,8 @@ async def list_backups(ctx: Context, node: str = 'local', storage_id: str = None
                 except Exception as e:
                     print(f"Warning: Could not access storage {storage['storage']}: {str(e)}")
         
-        # Filter for backup files
-        backups = [item for item in content if item.get('format') == 'vma' or item.get('format') == 'lxc']
+        # Filter for backup files by checking the content type
+        backups = [item for item in content if item.get('content') == 'backup']
         
         # Filter by VMID if specified
         if vmid is not None:
