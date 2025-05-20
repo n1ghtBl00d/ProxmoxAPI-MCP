@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import shlex
+import argparse # Added for command-line argument parsing
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -26,6 +27,9 @@ PROXMOX_VERIFY_SSL = os.getenv("PROXMOX_VERIFY_SSL", "true").lower() not in ('fa
 # SSL options
 PROXMOX_SSL_WARN_ONLY = os.getenv("PROXMOX_SSL_WARN_ONLY", "false").lower() in ('true', '1', 't')
 PROXMOX_TIMEOUT = int(os.getenv("PROXMOX_TIMEOUT", "30"))
+
+# Global flag for enabling dangerous actions
+DANGEROUS_ACTIONS_ENABLED = False
 
 # Basic validation
 if not all([PROXMOX_HOST, PROXMOX_USER, PROXMOX_PASSWORD]):
@@ -114,6 +118,17 @@ async def proxmox_lifespan(server: FastMCP) -> AsyncIterator[ProxmoxContext]:
         # No explicit cleanup needed for Proxmoxer client in this simple case
         print("Proxmox client context closing.")
         pass
+
+# --- Helper Functions ---
+def get_online_nodes(proxmox_client: ProxmoxAPI) -> List[Dict[str, Any]]:
+    """Retrieves a list of online nodes from the Proxmox cluster."""
+    try:
+        all_nodes = proxmox_client.nodes.get()
+        online_nodes = [node for node in all_nodes if node.get('status') == 'online']
+        return online_nodes
+    except Exception as e:
+        print(f"Error retrieving online nodes: {str(e)}")
+        return []
 
 # --- MCP Server Setup ---
 mcp = FastMCP(
@@ -463,6 +478,128 @@ async def manage_vm(ctx: Context, node_name: str, vmid: int, action: str) -> str
     except Exception as e:
         return f"Error performing '{action}' action on VM {vmid} on node '{node_name}': {str(e)}"
 
+@mcp.tool()
+async def create_vm_snapshot(ctx: Context, node_name: str, vmid: int, snapname: str, description: Optional[str] = None, vmstate: Optional[bool] = None) -> str:
+    """Creates a snapshot of a virtual machine.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+        snapname: The name of the snapshot.
+        description: An optional description for the snapshot.
+        vmstate: Optionally save the VM state (RAM). False if left blank.
+
+    Returns:
+        A string containing the task ID of the snapshot creation.
+        Returns an error message string if the API call fails.
+        Note: The task may return success even if the snapshot creation ultimately fails.
+              Always check the task log for the final status.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        params = {'snapname': snapname}
+        if description:
+            params['description'] = description
+        if vmstate is not None:
+            params['vmstate'] = 1 if vmstate else 0
+        
+        task = proxmox_client.nodes(node_name).qemu(vmid).snapshot.post(**params)
+        return f"Snapshot creation task started for VM {vmid}. Task ID: {task}"
+    except Exception as e:
+        return f"Error creating snapshot for VM {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def list_vm_snapshots(ctx: Context, node_name: str, vmid: int) -> str:
+    """Lists all snapshots for a specific virtual machine.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+
+    Returns:
+        A JSON formatted string containing the list of snapshots.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        snapshots = proxmox_client.nodes(node_name).qemu(vmid).snapshot.get()
+        return json.dumps(snapshots, indent=2)
+    except Exception as e:
+        return f"Error listing snapshots for VM {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def get_vm_snapshot_config(ctx: Context, node_name: str, vmid: int, snapname: str) -> str:
+    """Retrieves the configuration of a specific VM snapshot.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+        snapname: The name of the snapshot.
+
+    Returns:
+        A JSON formatted string containing the snapshot configuration.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        config = proxmox_client.nodes(node_name).qemu(vmid).snapshot(snapname).config.get()
+        return json.dumps(config, indent=2)
+    except Exception as e:
+        return f"Error retrieving config for snapshot '{snapname}' of VM {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def delete_vm_snapshot(ctx: Context, node_name: str, vmid: int, snapname: str) -> str:
+    """Deletes a specific snapshot of a virtual machine.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+        snapname: The name of the snapshot to delete.
+
+    Returns:
+        A string containing the task ID of the snapshot deletion.
+        Returns an error message string if the API call fails.
+
+    Note: This is a dangerous action and requires dangerous mode to be enabled (--dangerous-mode or PROXMOX_DANGEROUS_MODE=true).
+    """
+    try:
+        if not DANGEROUS_ACTIONS_ENABLED:
+            return "Error: This is a dangerous action and requires dangerous mode to be enabled. Use --dangerous-mode flag or set PROXMOX_DANGEROUS_MODE=true."
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        task = proxmox_client.nodes(node_name).qemu(vmid).snapshot(snapname).delete()
+        return f"Snapshot deletion task started for '{snapname}' of VM {vmid}. Task ID: {task}"
+    except Exception as e:
+        return f"Error deleting snapshot '{snapname}' for VM {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def rollback_vm_snapshot(ctx: Context, node_name: str, vmid: int, snapname: str) -> str:
+    """Rolls back a virtual machine to a specific snapshot.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+        snapname: The name of the snapshot to roll back to.
+
+    Returns:
+        A string containing the task ID of the rollback operation.
+        Returns an error message string if the API call fails.
+
+    Note: This is a dangerous action and requires dangerous mode to be enabled (--dangerous-mode or PROXMOX_DANGEROUS_MODE=true).
+    """
+    try:
+        if not DANGEROUS_ACTIONS_ENABLED:
+            return "Error: This is a dangerous action and requires dangerous mode to be enabled. Use --dangerous-mode flag or set PROXMOX_DANGEROUS_MODE=true."
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        task = proxmox_client.nodes(node_name).qemu(vmid).snapshot(snapname).rollback.post()
+        return f"Rollback task started to snapshot '{snapname}' for VM {vmid}. Task ID: {task}"
+    except Exception as e:
+        return f"Error rolling back to snapshot '{snapname}' for VM {vmid} on node '{node_name}': {str(e)}"
+
 # 3. LXC-related tools (parallel structure to VMs)
 @mcp.tool()
 async def get_lxcs(ctx: Context) -> str:
@@ -645,6 +782,125 @@ async def manage_lxc(ctx: Context, node_name: str, vmid: int, action: str) -> st
         return f"Successfully performed '{action}' action on LXC container {vmid} on node '{node_name}'."
     except Exception as e:
         return f"Error performing '{action}' action on LXC container {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def create_lxc_snapshot(ctx: Context, node_name: str, vmid: int, snapname: str, description: Optional[str] = None) -> str:
+    """Creates a snapshot of an LXC container.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the LXC container.
+        vmid: The VM ID of the LXC container.
+        snapname: The name of the snapshot.
+        description: An optional description for the snapshot.
+
+    Returns:
+        A string containing the task ID of the snapshot creation.
+        Returns an error message string if the API call fails.
+        Note: The task may return success even if the snapshot creation ultimately fails.
+              Always check the task log for the final status.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        params = {'snapname': snapname}
+        if description:
+            params['description'] = description
+        
+        task = proxmox_client.nodes(node_name).lxc(vmid).snapshot.post(**params)
+        return f"Snapshot creation task started for LXC container {vmid}. Task ID: {task}"
+    except Exception as e:
+        return f"Error creating snapshot for LXC container {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def list_lxc_snapshots(ctx: Context, node_name: str, vmid: int) -> str:
+    """Lists all snapshots for a specific LXC container.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the LXC container.
+        vmid: The VM ID of the LXC container.
+
+    Returns:
+        A JSON formatted string containing the list of snapshots.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        snapshots = proxmox_client.nodes(node_name).lxc(vmid).snapshot.get()
+        return json.dumps(snapshots, indent=2)
+    except Exception as e:
+        return f"Error listing snapshots for LXC container {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def get_lxc_snapshot_config(ctx: Context, node_name: str, vmid: int, snapname: str) -> str:
+    """Retrieves the configuration of a specific LXC snapshot.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the LXC container.
+        vmid: The VM ID of the LXC container.
+        snapname: The name of the snapshot.
+
+    Returns:
+        A JSON formatted string containing the snapshot configuration.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        config = proxmox_client.nodes(node_name).lxc(vmid).snapshot(snapname).config.get()
+        return json.dumps(config, indent=2)
+    except Exception as e:
+        return f"Error retrieving config for snapshot '{snapname}' of LXC container {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def delete_lxc_snapshot(ctx: Context, node_name: str, vmid: int, snapname: str) -> str:
+    """Deletes a specific snapshot of an LXC container.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the LXC container.
+        vmid: The VM ID of the LXC container.
+        snapname: The name of the snapshot to delete.
+
+    Returns:
+        A string containing the task ID of the snapshot deletion.
+        Returns an error message string if the API call fails.
+
+    Note: This is a dangerous action and requires dangerous mode to be enabled (--dangerous-mode or PROXMOX_DANGEROUS_MODE=true).
+    """
+    try:
+        if not DANGEROUS_ACTIONS_ENABLED:
+            return "Error: This is a dangerous action and requires dangerous mode to be enabled. Use --dangerous-mode flag or set PROXMOX_DANGEROUS_MODE=true."
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        task = proxmox_client.nodes(node_name).lxc(vmid).snapshot(snapname).delete()
+        return f"Snapshot deletion task started for '{snapname}' of LXC container {vmid}. Task ID: {task}"
+    except Exception as e:
+        return f"Error deleting snapshot '{snapname}' for LXC container {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def rollback_lxc_snapshot(ctx: Context, node_name: str, vmid: int, snapname: str) -> str:
+    """Rolls back an LXC container to a specific snapshot.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the LXC container.
+        vmid: The VM ID of the LXC container.
+        snapname: The name of the snapshot to roll back to.
+
+    Returns:
+        A string containing the task ID of the rollback operation.
+        Returns an error message string if the API call fails.
+
+    Note: This is a dangerous action and requires dangerous mode to be enabled (--dangerous-mode or PROXMOX_DANGEROUS_MODE=true).
+    """
+    try:
+        if not DANGEROUS_ACTIONS_ENABLED:
+            return "Error: This is a dangerous action and requires dangerous mode to be enabled. Use --dangerous-mode flag or set PROXMOX_DANGEROUS_MODE=true."
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        task = proxmox_client.nodes(node_name).lxc(vmid).snapshot(snapname).rollback.post()
+        return f"Rollback task started to snapshot '{snapname}' for LXC container {vmid}. Task ID: {task}"
+    except Exception as e:
+        return f"Error rolling back to snapshot '{snapname}' for LXC container {vmid} on node '{node_name}': {str(e)}"
 
 # 4. Storage and Backup-related tools
 @mcp.tool()
@@ -918,8 +1174,12 @@ async def restore_backup(ctx: Context, node: str, storage_id: str, backup_file: 
     Returns:
         A string containing the task ID of the restore operation.
         Returns an error message string if the API call fails.
+
+    Note: This is a dangerous action and requires dangerous mode to be enabled (--dangerous-mode or PROXMOX_DANGEROUS_MODE=true).
     """
     try:
+        if not DANGEROUS_ACTIONS_ENABLED:
+            return "Error: This is a dangerous action and requires dangerous mode to be enabled. Use --dangerous-mode flag or set PROXMOX_DANGEROUS_MODE=true."
         proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
         
         # Determine if this is a VM or LXC backup based on the file extension
@@ -1204,6 +1464,16 @@ async def get_cluster_status(ctx: Context) -> str:
         return json.dumps(cluster_status, indent=2)
     except Exception as e:
         return f"Error retrieving cluster status: {str(e)}"
+
+@mcp.tool()
+async def is_dangerous_mode_enabled(ctx: Context) -> str:
+    """Checks if dangerous actions mode is currently enabled.
+
+    Returns:
+        A JSON formatted string indicating whether dangerous mode is enabled.
+        Example: {"dangerous_mode_enabled": true}
+    """
+    return json.dumps({"dangerous_mode_enabled": DANGEROUS_ACTIONS_ENABLED})
 
 # 7. VM Agent tools (keep at bottom)
 @mcp.tool()
@@ -1525,6 +1795,30 @@ async def vm_agent_get_network(ctx: Context, node_name: str, vmid: int) -> str:
 
 # --- Main Execution ---
 async def main():
+    global DANGEROUS_ACTIONS_ENABLED # To modify the global variable
+
+    parser = argparse.ArgumentParser(description="MCP server for Proxmox VE with optional dangerous mode.")
+    parser.add_argument(
+        '--dangerous-mode',
+        action='store_true',
+        help="Enable dangerous actions like delete and restore. Overrides PROXMOX_DANGEROUS_MODE env var."
+    )
+    # Parse only known arguments to allow MCP to handle its own if any are passed through uvx/etc.
+    args, unknown = parser.parse_known_args()
+
+    dangerous_mode_cli = args.dangerous_mode
+    dangerous_mode_env = os.getenv("PROXMOX_DANGEROUS_MODE", "false").lower() in ('true', '1', 't')
+
+    if dangerous_mode_cli:
+        DANGEROUS_ACTIONS_ENABLED = True
+        print("INFO: Dangerous actions ENABLED via command-line argument (--dangerous-mode).")
+    elif dangerous_mode_env:
+        DANGEROUS_ACTIONS_ENABLED = True
+        print("INFO: Dangerous actions ENABLED via PROXMOX_DANGEROUS_MODE environment variable.")
+    else:
+        DANGEROUS_ACTIONS_ENABLED = False
+        print("INFO: Dangerous actions DISABLED. Destructive tools will require the flag to operate.")
+
     transport = os.getenv("TRANSPORT", "sse") # Default to SSE
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8051"))
