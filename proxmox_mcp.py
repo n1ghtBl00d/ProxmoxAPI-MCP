@@ -479,7 +479,7 @@ async def manage_vm(ctx: Context, node_name: str, vmid: int, action: str) -> str
         return f"Error performing '{action}' action on VM {vmid} on node '{node_name}': {str(e)}"
 
 @mcp.tool()
-async def create_vm_snapshot(ctx: Context, node_name: str, vmid: int, snapname: str, description: Optional[str] = None, vmstate: Optional[bool] = None) -> str:
+async def create_vm_snapshot(ctx: Context, node_name: str, vmid: int, snapname: str, description: Optional[str] = None, vmstate: bool = False) -> str:
     """Creates a snapshot of a virtual machine.
 
     Args:
@@ -945,12 +945,12 @@ async def get_storage(ctx: Context) -> str:
         return f"Error retrieving storage from cluster: {str(e)}"
 
 @mcp.tool()
-async def get_storage_list(ctx: Context, node: str = 'local') -> str:
+async def get_storage_list(ctx: Context, node: str) -> str:
     """Get a list of all available storage locations on a node.
 
     Args:
         ctx: The MCP server provided context.
-        node: The node to get storage information from (default: 'local').
+        node: The node to get storage information from.
 
     Returns:
         A JSON formatted string containing storage information.
@@ -984,12 +984,12 @@ async def get_storage_content(ctx: Context, node: str, storage_id: str) -> str:
         return f"Error retrieving storage content: {str(e)}"
 
 @mcp.tool()
-async def get_backup_storage_locations(ctx: Context, node: str = 'local') -> str:
+async def get_backup_storage_locations(ctx: Context, node: str) -> str:
     """Get a list of storage locations that can be used for backups.
 
     Args:
         ctx: The MCP server provided context.
-        node: The node to check for backup-capable storage (default: 'local').
+        node: The node to check for backup-capable storage.
 
     Returns:
         A JSON formatted string containing backup-capable storage locations.
@@ -1010,12 +1010,12 @@ async def get_backup_storage_locations(ctx: Context, node: str = 'local') -> str
         return f"Error retrieving backup storage locations: {str(e)}"
 
 @mcp.tool()
-async def list_backups(ctx: Context, node: str = 'local', storage_id: Optional[str] = None, vmid: Optional[int] = None) -> str:
+async def list_backups(ctx: Context, node: str, storage_id: Optional[str] = None, vmid: Optional[int] = None) -> str:
     """List available backups, optionally filtered by storage location or VM/LXC ID.
 
     Args:
         ctx: The MCP server provided context.
-        node: The node to check for backups (default: 'local').
+        node: The node to check for backups.
         storage_id: Optional storage ID to filter backups by location.
         vmid: Optional VM/LXC ID to filter backups by.
 
@@ -1204,6 +1204,37 @@ async def restore_backup(ctx: Context, node: str, storage_id: str, backup_file: 
         return f"Restore task started. Task ID: {task['data']}"
     except Exception as e:
         return f"Error restoring backup: {str(e)}"
+
+@mcp.tool()
+async def delete_backup(ctx: Context, node: str, storage_id: str, backup_file: str) -> str:
+    """Deletes a specific backup file from a storage location.
+
+    Args:
+        ctx: The MCP server provided context.
+        node: The node where the storage is located.
+        storage_id: The ID of the storage containing the backup.
+        backup_file: The volume ID of the backup file to delete (e.g., 'local:backup/vzdump-qemu-100-2023_10_26-10_00_00.vma.zst').
+
+    Returns:
+        A string indicating the result of the deletion.
+        Returns an error message string if the API call fails.
+
+    Note: This is a dangerous action and requires dangerous mode to be enabled (--dangerous-mode or PROXMOX_DANGEROUS_MODE=true).
+    """
+    try:
+        if not DANGEROUS_ACTIONS_ENABLED:
+            return "Error: This is a dangerous action and requires dangerous mode to be enabled. Use --dangerous-mode flag or set PROXMOX_DANGEROUS_MODE=true."
+        
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # The backup_file is the volid. Example: "local:backup/vzdump-qemu-101-2023_10_27-14_30_00.vma.zst"
+        # The API expects the part after the storage_id prefix if the volid contains it.
+        # However, proxmoxer handles this correctly if the full volid is passed.
+        task = proxmox_client.nodes(node).storage(storage_id).content(backup_file).delete()
+        
+        return f"Deletion task started for backup '{backup_file}' on storage '{storage_id}', node '{node}'. Task ID: {task}"
+    except Exception as e:
+        return f"Error deleting backup '{backup_file}' from storage '{storage_id}' on node '{node}': {str(e)}"
 
 # 5. Firewall-related tools
 @mcp.tool()
