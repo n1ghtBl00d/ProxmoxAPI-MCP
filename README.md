@@ -4,36 +4,22 @@ A powerful Model Context Protocol (MCP) server implementation for interacting wi
 
 ## 🌟 Features
 
-### Node Management
-- List all nodes in the cluster
-- Get detailed node status (CPU, memory, disk, network)
-- Monitor node services and health
-- Execute commands on nodes via SSH
+- Comprehensive management of Proxmox VE nodes, virtual machines (QEMU/KVM), and LXC containers.
+- Detailed status monitoring for nodes, VMs, LXCs, and services.
+- Lifecycle control for VMs and LXCs (start, stop, reboot, shutdown, suspend, resume).
+- Snapshot management for VMs and LXCs (create, list, get config, delete, rollback).
+- Cloning capabilities for VMs and LXCs, from both existing instances and templates, including cloning from snapshots.
+- Template conversion for VMs and LXCs.
+- Storage management: list pools, view content, identify backup-capable storage.
+- Backup and restore operations for VMs and LXCs, including status tracking and backup deletion.
+- Firewall rule management at cluster, node, VM, and LXC levels.
+- Cluster-wide operations: view logs, tasks, HA status, and overall cluster health.
+- QEMU Guest Agent interaction: execute commands, get OS info, hostname, users, network details, and ping agent.
+- **Dangerous Mode**: A safety feature requiring explicit enablement for destructive operations like deletions, rollbacks, and restores.
 
-### Virtual Machine Management
-- List all VMs across the cluster
-- Get detailed VM configuration and status
-- Control VM lifecycle (start, stop, reboot, shutdown)
-- Execute commands in VM consoles
-- Monitor VM resource usage
+## 📖 Tool Documentation
 
-### LXC Container Management
-- List all LXC containers
-- Get detailed container configuration and status
-- Control container lifecycle (start, stop, reboot, shutdown)
-- Monitor container resource usage
-
-### Storage Management
-- List available storage pools
-- Monitor storage usage and status
-- Manage backups and restores
-- Handle storage content
-
-### Cluster Operations
-- Monitor cluster health
-- Track cluster tasks and logs
-- Manage High Availability (HA) resources
-- Handle cluster-wide operations
+For a detailed list of all available tools, their parameters, and descriptions, please see the [**TOOLS.md**](TOOLS.md) file.
 
 ## 🚀 Getting Started
 
@@ -68,13 +54,38 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-2. Edit `.env` and set your Proxmox credentials:
+2. Edit `.env` with your Proxmox server details. 
+   The following are the **minimum required** settings for connecting to your Proxmox server:
 ```env
-PROXMOX_HOST=your-proxmox-host
-PROXMOX_USER=your-username
-PROXMOX_PASSWORD=your-password
-PROXMOX_VERIFY_SSL=true
+PROXMOX_HOST=your-proxmox-host:8006
+PROXMOX_USER=your-username@pam  # Or your specific realm, e.g., your-username@pve
+PROXMOX_PASSWORD=your-secure-password
 ```
+
+   Your `.env.example` file contains additional optional settings for:
+    - **SSL/TLS verification**: Control how SSL certificates are handled (`PROXMOX_VERIFY_SSL`, `PROXMOX_SSL_WARN_ONLY`). It is strongly recommended to keep `PROXMOX_VERIFY_SSL=true` for security.
+    - **API Timeout**: Adjust the timeout for Proxmox API calls (`PROXMOX_TIMEOUT`).
+    - **Dangerous Actions Mode**: Enable or disable destructive tools (`PROXMOX_DANGEROUS_MODE`).
+    - **MCP Server Settings**: Configure the MCP server transport, host, and port (`TRANSPORT`, `HOST`, `PORT`).
+
+   Please refer to the comments in `.env.example` for more details on each setting.
+
+### Dangerous Mode
+
+Several tools perform actions that can lead to data loss or significant changes (e.g., deleting a VM, rolling back a snapshot, restoring a backup). To prevent accidental use, these "dangerous" tools are disabled by default.
+
+To enable them, you can either:
+1.  **Command-line argument**: Start the server with the `--dangerous-mode` flag:
+    ```bash
+    python proxmox_mcp.py --dangerous-mode
+    ```
+2.  **Environment variable**: Set the `PROXMOX_DANGEROUS_MODE` environment variable to `true`:
+    ```env
+    PROXMOX_DANGEROUS_MODE=true
+    ```
+The command-line flag takes precedence if both are set.
+
+You can check if dangerous mode is currently active using the `is_dangerous_mode_enabled` tool.
 
 ### Running the Server
 
@@ -88,42 +99,6 @@ The server will start on `0.0.0.0:8051` by default. You can modify the host and 
 HOST=0.0.0.0
 PORT=8051
 ```
-
-## 🛠️ Available Tools
-
-### Node Operations
-- `get_nodes()`: List all nodes in the cluster
-- `get_node_status(node_name)`: Get detailed status for a specific node
-- `execute_command(node_name, command)`: Execute a command on a node
-
-### VM Operations
-- `get_vms()`: List all VMs across the cluster
-- `get_vm_config(node_name, vmid)`: Get VM configuration
-- `get_vm_status(node_name, vmid)`: Get VM status
-- `manage_vm(node_name, vmid, action)`: Control VM lifecycle
-
-### LXC Operations
-- `get_lxc()`: List all LXC containers
-- `get_lxc_info(node_name, vmid)`: Get container details
-- `manage_lxc(node_name, vmid, action)`: Control container lifecycle
-
-### Storage Operations
-- `get_storage()`: List storage pools
-- `create_backup(node, vmid, storage_id, mode)`: Create VM/LXC backups
-- `restore_backup(node, storage_id, backup_file, vmid)`: Restore from backup
-
-### Cluster Operations
-- `get_cluster_status()`: Get cluster health status
-- `get_cluster_ha_status()`: Get HA resource status
-- `get_cluster_tasks()`: List cluster tasks
-
-## 🔒 Security Considerations
-
-- Store credentials securely using environment variables
-- Use SSL verification for API connections
-- Implement proper access controls
-- Follow the principle of least privilege
-- Regularly update dependencies
 
 ## 🤝 Contributing
 
