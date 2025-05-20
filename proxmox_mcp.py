@@ -125,6 +125,8 @@ mcp = FastMCP(
 )
 
 # --- Tools ---
+
+# 1. Node-related tools (keep at top)
 @mcp.tool()
 async def get_nodes(ctx: Context) -> str:
     """Lists all nodes in the Proxmox cluster.
@@ -145,39 +147,6 @@ async def get_nodes(ctx: Context) -> str:
         return json.dumps(nodes, indent=2)
     except Exception as e:
         return f"Error retrieving nodes from Proxmox: {str(e)}"
-
-def get_online_nodes(proxmox_client: ProxmoxAPI):
-    """Gets a list of online nodes from the Proxmox cluster.
-    
-    Args:
-        proxmox_client: The ProxmoxAPI client instance.
-        
-    Returns:
-        A list of node dictionaries that are online.
-        Returns an empty list if the API call fails or no online nodes are found.
-    """
-    try:
-        if proxmox_client is None:
-            print("Warning: Proxmox client is not initialized.")
-            return []
-            
-        # Get all nodes in one API call
-        nodes = proxmox_client.nodes.get()
-        
-        if not nodes:
-            print("Warning: No nodes returned from Proxmox API.")
-            return []
-        
-        # Filter to only include online nodes
-        online_nodes = [node for node in nodes if node['status'] != 'offline']
-        
-        if not online_nodes:
-            print("Warning: No online nodes found in the cluster.")
-        
-        return online_nodes
-    except Exception as e:
-        print(f"Error retrieving online nodes: {str(e)}")
-        return []
 
 @mcp.tool()
 async def get_node_status(ctx: Context, node_name: str) -> str:
@@ -232,6 +201,269 @@ async def get_node_status(ctx: Context, node_name: str) -> str:
     except Exception as e:
         return f"Error retrieving status for node '{node_name}': {str(e)}"
 
+@mcp.tool()
+async def get_node_services(ctx: Context, node_name: str) -> str:
+    """List the status of various Proxmox-related services running on a specific node.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node to get service status for.
+
+    Returns:
+        A JSON formatted string containing service status information.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get all services on the node
+        services = proxmox_client.nodes(node_name).services.get()
+        
+        # Get detailed status for each service
+        service_details = []
+        for service in services:
+            service_name = service.get('name')
+            try:
+                # Get detailed service state
+                state = proxmox_client.nodes(node_name).services(service_name).state.get()
+                service['state'] = state
+                service_details.append(service)
+            except Exception as e:
+                # If we can't get state for a particular service, include the error
+                service['state_error'] = str(e)
+                service_details.append(service)
+        
+        return json.dumps(service_details, indent=2)
+    except Exception as e:
+        return f"Error retrieving services for node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def get_node_time(ctx: Context, node_name: str) -> str:
+    """Get the current system time on the specified node.
+
+    This is useful for checking time synchronization across the cluster.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node to get time information for.
+
+    Returns:
+        A JSON formatted string containing time information.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get time information from the node
+        time_info = proxmox_client.nodes(node_name).time.get()
+        
+        # Add a human-readable timestamp for convenience
+        if 'localtime' in time_info:
+            timestamp = time_info['localtime']
+            time_info['human_readable'] = time.strftime(
+                '%Y-%m-%d %H:%M:%S', 
+                time.localtime(timestamp)
+            )
+            
+            # Calculate time difference with server running MCP
+            server_time = int(time.time())
+            time_diff = server_time - timestamp
+            time_info['time_diff_seconds'] = time_diff
+            time_info['server_time'] = server_time
+            time_info['server_time_human'] = time.strftime(
+                '%Y-%m-%d %H:%M:%S', 
+                time.localtime(server_time)
+            )
+        
+        return json.dumps(time_info, indent=2)
+    except Exception as e:
+        return f"Error retrieving time information for node '{node_name}': {str(e)}"
+
+# 2. VM-related tools
+@mcp.tool()
+async def get_vms(ctx: Context) -> str:
+    """Lists all virtual machines across the cluster.
+
+    This tool retrieves information about all QEMU/KVM virtual machines
+    across all nodes in the Proxmox cluster.
+
+    Args:
+        ctx: The MCP server provided context.
+
+    Returns:
+        A JSON formatted string containing information about all VMs across the cluster.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Check if we have a valid connection
+        if proxmox_client is None:
+            return "Error: Not connected to Proxmox server. Please check your connection settings."
+        
+        # Get online nodes
+        online_nodes = get_online_nodes(proxmox_client)
+        
+        # Check if we got any online nodes
+        if not online_nodes:
+            return "No online nodes found in the cluster."
+        
+        # Get VMs from each online node
+        all_vms = []
+        for node in online_nodes:
+            node_name = node['node']
+            try:
+                # Get QEMU VMs from this node
+                vms = proxmox_client.nodes(node_name).qemu.get()
+                
+                # Add node information to each VM
+                for vm in vms:
+                    vm['node'] = node_name
+                
+                all_vms.extend(vms)
+            except Exception as e:
+                # If we can't get VMs from a node, log it but continue with other nodes
+                print(f"Error getting VMs from node {node_name}: {str(e)}")
+        
+        if not all_vms:
+            return "No VMs found on any online nodes."
+            
+        return json.dumps(all_vms, indent=2)
+    except Exception as e:
+        return f"Error retrieving VMs from cluster: {str(e)}"
+
+@mcp.tool()
+async def get_vm_info(ctx: Context, node_name: str, vmid: int) -> str:
+    """Retrieves detailed information about a specific virtual machine.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+
+    Returns:
+        A JSON formatted string containing detailed information about the specified VM.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get VM configuration
+        config = proxmox_client.nodes(node_name).qemu(vmid).config.get()
+        
+        # Get VM status
+        status = proxmox_client.nodes(node_name).qemu(vmid).status.current.get()
+        
+        # Get VM's snapshots if available
+        try:
+            snapshots = proxmox_client.nodes(node_name).qemu(vmid).snapshot.get()
+        except Exception:
+            snapshots = "Snapshot information not available"
+        
+        # Combine information
+        vm_info = {
+            "node_name": node_name,
+            "vmid": vmid,
+            "config": config,
+            "status": status,
+            "snapshots": snapshots
+        }
+        
+        return json.dumps(vm_info, indent=2)
+    except Exception as e:
+        return f"Error retrieving information for VM {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def get_vm_status(ctx: Context, node_name: str, vmid: int) -> str:
+    """Retrieves the current dynamic status of a specific virtual machine.
+
+    Gets current status information such as running state, uptime, CPU usage,
+    memory usage, disk I/O, and network I/O for a specific VM.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+
+    Returns:
+        A JSON formatted string containing current status information for the specified VM.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Get VM status
+        status = proxmox_client.nodes(node_name).qemu(vmid).status.current.get()
+        
+        # Optionally get more detailed runtime data if available
+        try:
+            # Get detailed VM runtime info
+            rrd_data = proxmox_client.nodes(node_name).qemu(vmid).rrddata.get(
+                timeframe="hour"  # Options: hour, day, week, month, year
+            )
+            status["rrd_data"] = rrd_data
+        except Exception:
+            # RRD data might not be available for all VMs
+            pass
+        
+        return json.dumps(status, indent=2)
+    except Exception as e:
+        return f"Error retrieving status for VM {vmid} on node '{node_name}': {str(e)}"
+
+@mcp.tool()
+async def manage_vm(ctx: Context, node_name: str, vmid: int, action: str) -> str:
+    """Manages a virtual machine by performing actions like start, stop, or reboot.
+
+    This tool allows you to control the lifecycle of a VM by performing
+    various actions such as starting, stopping, rebooting, shutting down, resetting,
+    suspending, or resuming the VM.
+
+    Args:
+        ctx: The MCP server provided context.
+        node_name: The name of the node containing the VM.
+        vmid: The VM ID.
+        action: The action to perform on the VM. Valid values are:
+                'start' - Start the VM
+                'stop' - Stop the VM immediately
+                'reboot' - Reboot the VM (shutdown and start)
+                'shutdown' - Gracefully shut down the VM
+                'reset' - Perform a hard reset on the VM (equivalent to pressing the reset button)
+                'suspend' - Suspend the VM to RAM
+                'resume' - Resume a previously suspended VM
+
+    Returns:
+        A string indicating the result of the action.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        
+        # Validate action
+        valid_actions = ['start', 'stop', 'reboot', 'shutdown', 'reset', 'suspend', 'resume']
+        if action not in valid_actions:
+            return f"Invalid action '{action}'. Valid actions are: {', '.join(valid_actions)}"
+        
+        # Perform the action
+        if action == 'start':
+            proxmox_client.nodes(node_name).qemu(vmid).status.start.post()
+        elif action == 'stop':
+            proxmox_client.nodes(node_name).qemu(vmid).status.stop.post()
+        elif action == 'reboot':
+            proxmox_client.nodes(node_name).qemu(vmid).status.reboot.post()
+        elif action == 'shutdown':
+            proxmox_client.nodes(node_name).qemu(vmid).status.shutdown.post()
+        elif action == 'reset':
+            proxmox_client.nodes(node_name).qemu(vmid).status.reset.post()
+        elif action == 'suspend':
+            proxmox_client.nodes(node_name).qemu(vmid).status.suspend.post()
+        elif action == 'resume':
+            proxmox_client.nodes(node_name).qemu(vmid).status.resume.post()
+        
+        return f"Successfully performed '{action}' action on VM {vmid} on node '{node_name}'."
+    except Exception as e:
+        return f"Error performing '{action}' action on VM {vmid} on node '{node_name}': {str(e)}"
+
+# 3. LXC-related tools (parallel structure to VMs)
 @mcp.tool()
 async def get_lxcs(ctx: Context) -> str:
     """Lists all LXC containers across the cluster.
@@ -414,246 +646,47 @@ async def manage_lxc(ctx: Context, node_name: str, vmid: int, action: str) -> st
     except Exception as e:
         return f"Error performing '{action}' action on LXC container {vmid} on node '{node_name}': {str(e)}"
 
+# 4. Storage and Backup-related tools
 @mcp.tool()
-async def manage_vm(ctx: Context, node_name: str, vmid: int, action: str) -> str:
-    """Manages a virtual machine by performing actions like start, stop, or reboot.
+async def get_storage(ctx: Context) -> str:
+    """Lists available storage pools across the cluster.
 
-    This tool allows you to control the lifecycle of a VM by performing
-    various actions such as starting, stopping, rebooting, shutting down, resetting,
-    suspending, or resuming the VM.
+    This tool retrieves information about all storage pools
+    across all nodes in the Proxmox cluster.
 
     Args:
         ctx: The MCP server provided context.
-        node_name: The name of the node containing the VM.
-        vmid: The VM ID.
-        action: The action to perform on the VM. Valid values are:
-                'start' - Start the VM
-                'stop' - Stop the VM immediately
-                'reboot' - Reboot the VM (shutdown and start)
-                'shutdown' - Gracefully shut down the VM
-                'reset' - Perform a hard reset on the VM (equivalent to pressing the reset button)
-                'suspend' - Suspend the VM to RAM
-                'resume' - Resume a previously suspended VM
 
     Returns:
-        A string indicating the result of the action.
+        A JSON formatted string containing information about all storage pools across the cluster.
         Returns an error message string if the API call fails.
     """
     try:
         proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
         
-        # Validate action
-        valid_actions = ['start', 'stop', 'reboot', 'shutdown', 'reset', 'suspend', 'resume']
-        if action not in valid_actions:
-            return f"Invalid action '{action}'. Valid actions are: {', '.join(valid_actions)}"
+        # Get online nodes
+        online_nodes = get_online_nodes(proxmox_client)
         
-        # Perform the action
-        if action == 'start':
-            proxmox_client.nodes(node_name).qemu(vmid).status.start.post()
-        elif action == 'stop':
-            proxmox_client.nodes(node_name).qemu(vmid).status.stop.post()
-        elif action == 'reboot':
-            proxmox_client.nodes(node_name).qemu(vmid).status.reboot.post()
-        elif action == 'shutdown':
-            proxmox_client.nodes(node_name).qemu(vmid).status.shutdown.post()
-        elif action == 'reset':
-            proxmox_client.nodes(node_name).qemu(vmid).status.reset.post()
-        elif action == 'suspend':
-            proxmox_client.nodes(node_name).qemu(vmid).status.suspend.post()
-        elif action == 'resume':
-            proxmox_client.nodes(node_name).qemu(vmid).status.resume.post()
+        # Get storage from each online node
+        all_storage = []
+        for node in online_nodes:
+            node_name = node['node']
+            try:
+                # Get storage from this node
+                storage = proxmox_client.nodes(node_name).storage.get()
+                
+                # Add node information to each storage entry
+                for store in storage:
+                    store['node'] = node_name
+                
+                all_storage.extend(storage)
+            except Exception as e:
+                # If we can't get storage from a node, log it but continue with other nodes
+                print(f"Error getting storage from node {node_name}: {str(e)}")
         
-        return f"Successfully performed '{action}' action on VM {vmid} on node '{node_name}'."
+        return json.dumps(all_storage, indent=2)
     except Exception as e:
-        return f"Error performing '{action}' action on VM {vmid} on node '{node_name}': {str(e)}"
-
-@mcp.tool()
-async def get_cluster_log(ctx: Context, limit: int = 50, since: str = None) -> str:
-    """Retrieve recent cluster-wide log entries.
-
-    Args:
-        ctx: The MCP server provided context.
-        limit: Maximum number of log entries to return (default: 50).
-        since: Optional timestamp to filter logs from a specific time.
-
-    Returns:
-        A JSON formatted string containing cluster log entries.
-        Returns an error message string if the API call fails.
-    """
-    try:
-        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        # Get all logs and then limit them in Python
-        logs = proxmox_client.cluster.log.get()
-        if since:
-            # Filter logs by timestamp if provided
-            logs = [log for log in logs if log['time'] >= since]
-        # Limit the number of logs returned
-        logs = logs[:limit]
-        return json.dumps(logs, indent=2)
-    except Exception as e:
-        return f"Error retrieving cluster logs: {str(e)}"
-
-@mcp.tool()
-async def get_cluster_tasks(ctx: Context) -> str:
-    """List recent or currently running cluster-wide tasks.
-
-    Args:
-        ctx: The MCP server provided context.
-
-    Returns:
-        A JSON formatted string containing cluster tasks.
-        Returns an error message string if the API call fails.
-    """
-    try:
-        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        tasks = proxmox_client.cluster.tasks.get()
-        return json.dumps(tasks, indent=2)
-    except Exception as e:
-        return f"Error retrieving cluster tasks: {str(e)}"
-
-@mcp.tool()
-async def get_task_status(ctx: Context, node: str, upid: str) -> str:
-    """Get the current status of a specific task.
-
-    Args:
-        ctx: The MCP server provided context.
-        node: The node where the task is running.
-        upid: The Unique Process ID of the task.
-
-    Returns:
-        A JSON formatted string containing task status.
-        Returns an error message string if the API call fails.
-    """
-    try:
-        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        status = proxmox_client.nodes(node).tasks(upid).status.get()
-        return json.dumps(status, indent=2)
-    except Exception as e:
-        return f"Error retrieving task status: {str(e)}"
-
-@mcp.tool()
-async def get_task_log(ctx: Context, node: str, upid: str) -> str:
-    """Retrieve the full log output for a specific task.
-
-    Args:
-        ctx: The MCP server provided context.
-        node: The node where the task is running.
-        upid: The Unique Process ID of the task.
-
-    Returns:
-        A JSON formatted string containing task log.
-        Returns an error message string if the API call fails.
-    """
-    try:
-        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        log = proxmox_client.nodes(node).tasks(upid).log.get()
-        return json.dumps(log, indent=2)
-    except Exception as e:
-        return f"Error retrieving task log: {str(e)}"
-
-@mcp.tool()
-async def get_cluster_ha_status(ctx: Context) -> str:
-    """Get High Availability status information.
-
-    Args:
-        ctx: The MCP server provided context.
-
-    Returns:
-        A JSON formatted string containing HA status information.
-        Returns an error message string if the API call fails.
-    """
-    try:
-        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        ha_status = proxmox_client.cluster.ha.status.get()
-        return json.dumps(ha_status, indent=2)
-    except Exception as e:
-        return f"Error retrieving HA status: {str(e)}"
-
-@mcp.tool()
-async def get_cluster_firewall_rules(ctx: Context) -> str:
-    """Retrieve firewall rules configured at the datacenter level.
-
-    Args:
-        ctx: The MCP server provided context.
-
-    Returns:
-        A JSON formatted string containing cluster firewall rules.
-        Returns an error message string if the API call fails.
-    """
-    try:
-        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        rules = proxmox_client.cluster.firewall.rules.get()
-        return json.dumps(rules, indent=2)
-    except Exception as e:
-        return f"Error retrieving cluster firewall rules: {str(e)}"
-
-@mcp.tool()
-async def get_node_firewall_rules(ctx: Context, node: str) -> str:
-    """Retrieve firewall rules configured at the node level.
-
-    Args:
-        ctx: The MCP server provided context.
-        node: The node to get firewall rules for.
-
-    Returns:
-        A JSON formatted string containing node firewall rules.
-        Returns an error message string if the API call fails.
-    """
-    try:
-        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        rules = proxmox_client.nodes(node).firewall.rules.get()
-        return json.dumps(rules, indent=2)
-    except Exception as e:
-        return f"Error retrieving node firewall rules: {str(e)}"
-
-@mcp.tool()
-async def get_vm_firewall_rules(ctx: Context, node: str, vmid: int) -> str:
-    """Retrieve firewall rules configured for a specific VM.
-
-    Args:
-        ctx: The MCP server provided context.
-        node: The node hosting the VM.
-        vmid: The ID of the VM.
-
-    Returns:
-        A JSON formatted string containing VM firewall rules.
-        Returns an error message string if the API call fails.
-    """
-    try:
-        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        
-        # Verify that this is a QEMU VM
-        try:
-            # Check if the VM exists
-            vm_info = proxmox_client.nodes(node).qemu(vmid).status.current.get()
-            # Get VM firewall rules
-            rules = proxmox_client.nodes(node).qemu(vmid).firewall.rules.get()
-            return json.dumps(rules, indent=2)
-        except Exception as e:
-            return f"Error: Could not find VM with ID {vmid} on node {node}: {str(e)}"
-            
-    except Exception as e:
-        return f"Error retrieving VM firewall rules: {str(e)}"
-
-@mcp.tool()
-async def get_lxc_firewall_rules(ctx: Context, node: str, vmid: int) -> str:
-    """Retrieve firewall rules configured for a specific LXC container.
-
-    Args:
-        ctx: The MCP server provided context.
-        node: The node hosting the LXC container.
-        vmid: The ID of the LXC container.
-
-    Returns:
-        A JSON formatted string containing LXC firewall rules.
-        Returns an error message string if the API call fails.
-    """
-    try:
-        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        rules = proxmox_client.nodes(node).lxc(vmid).firewall.rules.get()
-        return json.dumps(rules, indent=2)
-    except Exception as e:
-        return f"Error retrieving LXC firewall rules: {str(e)}"
+        return f"Error retrieving storage from cluster: {str(e)}"
 
 @mcp.tool()
 async def get_storage_list(ctx: Context, node: str = 'local') -> str:
@@ -772,8 +805,7 @@ async def list_backups(ctx: Context, node: str = 'local', storage_id: str = None
         return f"Error listing backups: {str(e)}"
 
 @mcp.tool()
-async def create_backup(ctx: Context, node: str, vmid: int, storage_id: str, mode: str = 'snapshot', 
-                       compress: str = 'lzo', remove: bool = False) -> str:
+async def create_backup(ctx: Context, node: str, vmid: int, storage_id: str, mode: str = 'snapshot', compress: str = 'lzo', remove: bool = False) -> str:
     """Create a backup of a VM or LXC container.
 
     Args:
@@ -872,8 +904,7 @@ async def get_backup_status(ctx: Context, node: str, upid: str) -> str:
         return f"Error getting backup status: {str(e)}"
 
 @mcp.tool()
-async def restore_backup(ctx: Context, node: str, storage_id: str, backup_file: str, 
-                        vmid: int = None, force: bool = False) -> str:
+async def restore_backup(ctx: Context, node: str, storage_id: str, backup_file: str, vmid: int = None, force: bool = False) -> str:
     """Restore a VM or LXC container from a backup.
 
     Args:
@@ -914,254 +945,195 @@ async def restore_backup(ctx: Context, node: str, storage_id: str, backup_file: 
     except Exception as e:
         return f"Error restoring backup: {str(e)}"
 
+# 5. Firewall-related tools
 @mcp.tool()
-async def get_vms(ctx: Context) -> str:
-    """Lists all virtual machines across the cluster.
-
-    This tool retrieves information about all QEMU/KVM virtual machines
-    across all nodes in the Proxmox cluster.
+async def get_cluster_firewall_rules(ctx: Context) -> str:
+    """Retrieve firewall rules configured at the datacenter level.
 
     Args:
         ctx: The MCP server provided context.
 
     Returns:
-        A JSON formatted string containing information about all VMs across the cluster.
+        A JSON formatted string containing cluster firewall rules.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        rules = proxmox_client.cluster.firewall.rules.get()
+        return json.dumps(rules, indent=2)
+    except Exception as e:
+        return f"Error retrieving cluster firewall rules: {str(e)}"
+
+@mcp.tool()
+async def get_node_firewall_rules(ctx: Context, node: str) -> str:
+    """Retrieve firewall rules configured at the node level.
+
+    Args:
+        ctx: The MCP server provided context.
+        node: The node to get firewall rules for.
+
+    Returns:
+        A JSON formatted string containing node firewall rules.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        rules = proxmox_client.nodes(node).firewall.rules.get()
+        return json.dumps(rules, indent=2)
+    except Exception as e:
+        return f"Error retrieving node firewall rules: {str(e)}"
+
+@mcp.tool()
+async def get_vm_firewall_rules(ctx: Context, node: str, vmid: int) -> str:
+    """Retrieve firewall rules configured for a specific VM.
+
+    Args:
+        ctx: The MCP server provided context.
+        node: The node hosting the VM.
+        vmid: The ID of the VM.
+
+    Returns:
+        A JSON formatted string containing VM firewall rules.
         Returns an error message string if the API call fails.
     """
     try:
         proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
         
-        # Check if we have a valid connection
-        if proxmox_client is None:
-            return "Error: Not connected to Proxmox server. Please check your connection settings."
-        
-        # Get online nodes
-        online_nodes = get_online_nodes(proxmox_client)
-        
-        # Check if we got any online nodes
-        if not online_nodes:
-            return "No online nodes found in the cluster."
-        
-        # Get VMs from each online node
-        all_vms = []
-        for node in online_nodes:
-            node_name = node['node']
-            try:
-                # Get QEMU VMs from this node
-                vms = proxmox_client.nodes(node_name).qemu.get()
-                
-                # Add node information to each VM
-                for vm in vms:
-                    vm['node'] = node_name
-                
-                all_vms.extend(vms)
-            except Exception as e:
-                # If we can't get VMs from a node, log it but continue with other nodes
-                print(f"Error getting VMs from node {node_name}: {str(e)}")
-        
-        if not all_vms:
-            return "No VMs found on any online nodes."
+        # Verify that this is a QEMU VM
+        try:
+            # Check if the VM exists
+            vm_info = proxmox_client.nodes(node).qemu(vmid).status.current.get()
+            # Get VM firewall rules
+            rules = proxmox_client.nodes(node).qemu(vmid).firewall.rules.get()
+            return json.dumps(rules, indent=2)
+        except Exception as e:
+            return f"Error: Could not find VM with ID {vmid} on node {node}: {str(e)}"
             
-        return json.dumps(all_vms, indent=2)
     except Exception as e:
-        return f"Error retrieving VMs from cluster: {str(e)}"
+        return f"Error retrieving VM firewall rules: {str(e)}"
 
 @mcp.tool()
-async def get_storage(ctx: Context) -> str:
-    """Lists available storage pools across the cluster.
+async def get_lxc_firewall_rules(ctx: Context, node: str, vmid: int) -> str:
+    """Retrieve firewall rules configured for a specific LXC container.
 
-    This tool retrieves information about all storage pools
-    across all nodes in the Proxmox cluster.
+    Args:
+        ctx: The MCP server provided context.
+        node: The node hosting the LXC container.
+        vmid: The ID of the LXC container.
+
+    Returns:
+        A JSON formatted string containing LXC firewall rules.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        rules = proxmox_client.nodes(node).lxc(vmid).firewall.rules.get()
+        return json.dumps(rules, indent=2)
+    except Exception as e:
+        return f"Error retrieving LXC firewall rules: {str(e)}"
+
+# 6. Cluster-wide tools
+@mcp.tool()
+async def get_cluster_log(ctx: Context, limit: int = 50, since: str = None) -> str:
+    """Retrieve recent cluster-wide log entries.
+
+    Args:
+        ctx: The MCP server provided context.
+        limit: Maximum number of log entries to return (default: 50).
+        since: Optional timestamp to filter logs from a specific time.
+
+    Returns:
+        A JSON formatted string containing cluster log entries.
+        Returns an error message string if the API call fails.
+    """
+    try:
+        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
+        # Get all logs and then limit them in Python
+        logs = proxmox_client.cluster.log.get()
+        if since:
+            # Filter logs by timestamp if provided
+            logs = [log for log in logs if log['time'] >= since]
+        # Limit the number of logs returned
+        logs = logs[:limit]
+        return json.dumps(logs, indent=2)
+    except Exception as e:
+        return f"Error retrieving cluster logs: {str(e)}"
+
+@mcp.tool()
+async def get_cluster_tasks(ctx: Context) -> str:
+    """List recent or currently running cluster-wide tasks.
 
     Args:
         ctx: The MCP server provided context.
 
     Returns:
-        A JSON formatted string containing information about all storage pools across the cluster.
+        A JSON formatted string containing cluster tasks.
         Returns an error message string if the API call fails.
     """
     try:
         proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        
-        # Get online nodes
-        online_nodes = get_online_nodes(proxmox_client)
-        
-        # Get storage from each online node
-        all_storage = []
-        for node in online_nodes:
-            node_name = node['node']
-            try:
-                # Get storage from this node
-                storage = proxmox_client.nodes(node_name).storage.get()
-                
-                # Add node information to each storage entry
-                for store in storage:
-                    store['node'] = node_name
-                
-                all_storage.extend(storage)
-            except Exception as e:
-                # If we can't get storage from a node, log it but continue with other nodes
-                print(f"Error getting storage from node {node_name}: {str(e)}")
-        
-        return json.dumps(all_storage, indent=2)
+        tasks = proxmox_client.cluster.tasks.get()
+        return json.dumps(tasks, indent=2)
     except Exception as e:
-        return f"Error retrieving storage from cluster: {str(e)}"
+        return f"Error retrieving cluster tasks: {str(e)}"
 
 @mcp.tool()
-async def get_vm_info(ctx: Context, node_name: str, vmid: int) -> str:
-    """Retrieves detailed information about a specific virtual machine.
+async def get_task_status(ctx: Context, node: str, upid: str) -> str:
+    """Get the current status of a specific task.
 
     Args:
         ctx: The MCP server provided context.
-        node_name: The name of the node containing the VM.
-        vmid: The VM ID.
+        node: The node where the task is running.
+        upid: The Unique Process ID of the task.
 
     Returns:
-        A JSON formatted string containing detailed information about the specified VM.
+        A JSON formatted string containing task status.
         Returns an error message string if the API call fails.
     """
     try:
         proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        
-        # Get VM configuration
-        config = proxmox_client.nodes(node_name).qemu(vmid).config.get()
-        
-        # Get VM status
-        status = proxmox_client.nodes(node_name).qemu(vmid).status.current.get()
-        
-        # Get VM's snapshots if available
-        try:
-            snapshots = proxmox_client.nodes(node_name).qemu(vmid).snapshot.get()
-        except Exception:
-            snapshots = "Snapshot information not available"
-        
-        # Combine information
-        vm_info = {
-            "node_name": node_name,
-            "vmid": vmid,
-            "config": config,
-            "status": status,
-            "snapshots": snapshots
-        }
-        
-        return json.dumps(vm_info, indent=2)
-    except Exception as e:
-        return f"Error retrieving information for VM {vmid} on node '{node_name}': {str(e)}"
-
-@mcp.tool()
-async def get_vm_status(ctx: Context, node_name: str, vmid: int) -> str:
-    """Retrieves the current dynamic status of a specific virtual machine.
-
-    Gets current status information such as running state, uptime, CPU usage,
-    memory usage, disk I/O, and network I/O for a specific VM.
-
-    Args:
-        ctx: The MCP server provided context.
-        node_name: The name of the node containing the VM.
-        vmid: The VM ID.
-
-    Returns:
-        A JSON formatted string containing current status information for the specified VM.
-        Returns an error message string if the API call fails.
-    """
-    try:
-        proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        
-        # Get VM status
-        status = proxmox_client.nodes(node_name).qemu(vmid).status.current.get()
-        
-        # Optionally get more detailed runtime data if available
-        try:
-            # Get detailed VM runtime info
-            rrd_data = proxmox_client.nodes(node_name).qemu(vmid).rrddata.get(
-                timeframe="hour"  # Options: hour, day, week, month, year
-            )
-            status["rrd_data"] = rrd_data
-        except Exception:
-            # RRD data might not be available for all VMs
-            pass
-        
+        status = proxmox_client.nodes(node).tasks(upid).status.get()
         return json.dumps(status, indent=2)
     except Exception as e:
-        return f"Error retrieving status for VM {vmid} on node '{node_name}': {str(e)}"
+        return f"Error retrieving task status: {str(e)}"
 
 @mcp.tool()
-async def get_node_services(ctx: Context, node_name: str) -> str:
-    """List the status of various Proxmox-related services running on a specific node.
+async def get_task_log(ctx: Context, node: str, upid: str) -> str:
+    """Retrieve the full log output for a specific task.
 
     Args:
         ctx: The MCP server provided context.
-        node_name: The name of the node to get service status for.
+        node: The node where the task is running.
+        upid: The Unique Process ID of the task.
 
     Returns:
-        A JSON formatted string containing service status information.
+        A JSON formatted string containing task log.
         Returns an error message string if the API call fails.
     """
     try:
         proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        
-        # Get all services on the node
-        services = proxmox_client.nodes(node_name).services.get()
-        
-        # Get detailed status for each service
-        service_details = []
-        for service in services:
-            service_name = service.get('name')
-            try:
-                # Get detailed service state
-                state = proxmox_client.nodes(node_name).services(service_name).state.get()
-                service['state'] = state
-                service_details.append(service)
-            except Exception as e:
-                # If we can't get state for a particular service, include the error
-                service['state_error'] = str(e)
-                service_details.append(service)
-        
-        return json.dumps(service_details, indent=2)
+        log = proxmox_client.nodes(node).tasks(upid).log.get()
+        return json.dumps(log, indent=2)
     except Exception as e:
-        return f"Error retrieving services for node '{node_name}': {str(e)}"
+        return f"Error retrieving task log: {str(e)}"
 
 @mcp.tool()
-async def get_node_time(ctx: Context, node_name: str) -> str:
-    """Get the current system time on the specified node.
-
-    This is useful for checking time synchronization across the cluster.
+async def get_cluster_ha_status(ctx: Context) -> str:
+    """Get High Availability status information.
 
     Args:
         ctx: The MCP server provided context.
-        node_name: The name of the node to get time information for.
 
     Returns:
-        A JSON formatted string containing time information.
+        A JSON formatted string containing HA status information.
         Returns an error message string if the API call fails.
     """
     try:
         proxmox_client: ProxmoxAPI = ctx.request_context.lifespan_context.proxmox_client
-        
-        # Get time information from the node
-        time_info = proxmox_client.nodes(node_name).time.get()
-        
-        # Add a human-readable timestamp for convenience
-        if 'localtime' in time_info:
-            timestamp = time_info['localtime']
-            time_info['human_readable'] = time.strftime(
-                '%Y-%m-%d %H:%M:%S', 
-                time.localtime(timestamp)
-            )
-            
-            # Calculate time difference with server running MCP
-            server_time = int(time.time())
-            time_diff = server_time - timestamp
-            time_info['time_diff_seconds'] = time_diff
-            time_info['server_time'] = server_time
-            time_info['server_time_human'] = time.strftime(
-                '%Y-%m-%d %H:%M:%S', 
-                time.localtime(server_time)
-            )
-        
-        return json.dumps(time_info, indent=2)
+        ha_status = proxmox_client.cluster.ha.status.get()
+        return json.dumps(ha_status, indent=2)
     except Exception as e:
-        return f"Error retrieving time information for node '{node_name}': {str(e)}"
+        return f"Error retrieving HA status: {str(e)}"
 
 @mcp.tool()
 async def get_cluster_status(ctx: Context) -> str:
@@ -1233,6 +1205,7 @@ async def get_cluster_status(ctx: Context) -> str:
     except Exception as e:
         return f"Error retrieving cluster status: {str(e)}"
 
+# 7. VM Agent tools (keep at bottom)
 @mcp.tool()
 async def vm_agent_exec(ctx: Context, node_name: str, vmid: int, command: str, username: Optional[str] = None) -> str:
     """Executes a command in a VM's console via QEMU Guest Agent.
@@ -1549,7 +1522,6 @@ async def vm_agent_get_network(ctx: Context, node_name: str, vmid: int) -> str:
         return json.dumps(result, indent=2)
     except Exception as e:
         return f"Error getting network information for VM {vmid} on node {node_name}: {str(e)}"
-
 
 # --- Main Execution ---
 async def main():
